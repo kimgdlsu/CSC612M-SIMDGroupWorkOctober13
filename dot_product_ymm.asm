@@ -1,8 +1,11 @@
 ; dot_product_ymm.asm -- AVX2 SIMD kernel using YMM
 ; NASM syntax, Windows x64 ABI
 ;
-; void dot_product_ymm(int64_t n, const double* A, const double* B, double* Z)
-;   RCX = n, RDX = A, R8 = B, R9 = Z
+; Parameters passed in:
+;   RCX = n (number of elements)
+;   RDX = pointer to Array A
+;   R8  = pointer to Array B
+;   R9  = pointer to Z (result variable)
 
 bits 64
 default rel
@@ -11,73 +14,72 @@ section .text
 global dot_product_ymm
 
 dot_product_ymm:
-    ; Zero out ymm0 (will hold the 4 partial vector sums)
+    ; Zero out ymm0 where we'll accumulate partial sums
     vxorpd      ymm0, ymm0, ymm0
 
-    ; Check if n <= 0
+    ; Make sure n > 0, otherwise skip everything
     test        rcx, rcx
     jle         .store_result
 
-    ; Calculate main loop iterations: rax = n / 4, r10 = n % 4
+    ; Calculate loop counts
     mov         rax, rcx
-    shr         rax, 2              ; rax = n / 4
+    shr         rax, 2              ; rax = n / 4 (number of 4-element YMM chunks)
     mov         r10, rcx
-    and         r10, 3              ; r10 = n % 4 (remainder)
+    and         r10, 3              ; r10 = n % 4 (leftover elements)
 
+    ; If n < 4, skip YMM loop and go straight to tail
     test        rax, rax
     jz          .tail_loop
 
 .ymm_loop:
-    ; Load 4 doubles from A and B (unaligned load)
+    ; Load 4 doubles from A and B
     vmovupd     ymm1, [rdx]
     vmovupd     ymm2, [r8]
 
-    ; Multiply A[i..i+3] * B[i..i+3]
+    ; Multiply elements: ymm1 = A[i..i+3] * B[i..i+3]
     vmulpd      ymm1, ymm1, ymm2
 
-    ; Accumulate into ymm0
+    ; Add products to running totals in ymm0
     vaddpd      ymm0, ymm0, ymm1
 
-    ; Advance pointers by 32 bytes (4 doubles * 8 bytes)
+    ; Move array pointers by 32 bytes (4 doubles * 8 bytes)
     add         rdx, 32
     add         r8, 32
 
     dec         rax
     jnz         .ymm_loop
 
-    ; -------------------------------------------------------------
-    ; Horizontal reduction of ymm0 (4 lanes -> 1 double in xmm0)
-    ; -------------------------------------------------------------
-    ; Extract upper 128 bits (lanes 2 & 3) of ymm0 into xmm1
+    ; Reduce 4 YMM lanes down to 1 scalar double
+    ; Extract upper 2 doubles (lanes 2 & 3) into xmm1
     vextractf128 xmm1, ymm0, 1
 
-    ; Add upper 128 bits (xmm1) to lower 128 bits (xmm0)
-    ; xmm0 now contains [ (lane 0 + lane 2), (lane 1 + lane 3) ]
+    ; Add upper 2 doubles to lower 2 doubles
     vaddpd      xmm0, xmm0, xmm1
 
-    ; Horizontal add adjacent pairs in xmm0
-    ; xmm0 lower double = (lane 0 + lane 2) + (lane 1 + lane 3)
+    ; Add remaining 2 doubles together horizontally
     vhaddpd     xmm0, xmm0, xmm0
 
 .tail_loop:
+    ; Check for leftover elements (n % 4)
     test        r10, r10
     jz          .store_result
 
 .tail_step:
-    ; Process leftover scalar elements (n % 4)
+    ; Process 1 leftover double scalar-style
     vmovsd      xmm1, [rdx]
     vmulsd      xmm1, xmm1, [r8]
     vaddsd      xmm0, xmm0, xmm1
 
+    ; Advance pointers by 8 bytes (1 double)
     add         rdx, 8
     add         r8, 8
     dec         r10
     jnz         .tail_step
 
 .store_result:
-    ; Store double result into *Z
+    ; Save final double result to *Z
     vmovsd      [r9], xmm0
 
-    ; Clear upper YMM state before returning to avoid AVX-SSE transition penalty
+    ; Reset upper YMM register state before returning
     vzeroupper
     ret
