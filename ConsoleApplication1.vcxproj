@@ -147,28 +147,28 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <FileType>Document</FileType>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">c:\nasm\nasm -fwin64 dot_product_asm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">dot_product_asm.obj</Outputs>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">c:\nasm\nasm -fwin64 dot_product_asm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">dot_product_asm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">nasm -fwin64 dot_product_asm.asm -o "$(IntDir)dot_product_asm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)dot_product_asm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">nasm -fwin64 dot_product_asm.asm -o "$(IntDir)dot_product_asm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)dot_product_asm.obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="dot_product_xmm.asm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <FileType>Document</FileType>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">c:\nasm\nasm -fwin64 dot_product_xmm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">dot_product_xmm.obj</Outputs>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">c:\nasm\nasm -fwin64 dot_product_xmm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">dot_product_xmm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">nasm -fwin64 dot_product_xmm.asm -o "$(IntDir)dot_product_xmm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)dot_product_xmm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">nasm -fwin64 dot_product_xmm.asm -o "$(IntDir)dot_product_xmm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)dot_product_xmm.obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="dot_product_ymm.asm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <FileType>Document</FileType>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">c:\nasm\nasm -fwin64 dot_product_ymm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">dot_product_ymm.obj</Outputs>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">c:\nasm\nasm -fwin64 dot_product_ymm.asm</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">dot_product_ymm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">nasm -fwin64 dot_product_ymm.asm -o "$(IntDir)dot_product_ymm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)dot_product_ymm.obj</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">nasm -fwin64 dot_product_ymm.asm -o "$(IntDir)dot_product_ymm.obj"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)dot_product_ymm.obj</Outputs>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
