@@ -1,6 +1,6 @@
 # CSC612M SIMD Vector Dot Product
 
-**Author:** Khladyn  
+**Author:** Kim, JM, Jean  
 **Course:** CSC612M - Advanced Computer Architecture  
 **Topic:** Scalar C, x86-64 assembly, XMM SIMD, and YMM SIMD dot-product kernels
 
