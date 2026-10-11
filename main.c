@@ -1,7 +1,7 @@
 /*
- * main.c  --  shared driver (owner: Person 1; others should not edit)
+ * main.c  --  shared driver
  *
- * Responsibilities:
+ * Program Overview:
  *   - allocate + initialize A and B
  *   - run every kernel RUNS times per size, time the kernel call only
  *   - verify each kernel against the C result
@@ -32,15 +32,22 @@
 /* Benchmark sizes. Lower the last one to (1LL << 29) or (1LL << 28)
  * if allocation fails (2^30 doubles = 8 GB per vector). */
 static const int64_t BENCH_SIZES[] = {
+    1LL << 12,   /* 64 KB total  - about L1 size */
+    1LL << 15,   /* 512 KB total - fits in L2   */
     1LL << 20,
     1LL << 26,
-    1LL << 28,              /* TODO: try 1LL << 30 first, document what fits */
+    1LL << 28,             
 };
 
 /* Boundary sizes (item 3a): not multiples of 2 or 4, to exercise tail code. */
 static const int64_t BOUNDARY_SIZES[] = {
-    1, 2, 3, 5, 7, 1003,
+    /* smaller than / equal to one or two vectors */
+    1, 2, 3, 4, 5, 6, 7, 8,
+    /* checklist sizes: every remainder mod 4 */
+    1000, 1001, 1002, 1003, 1004,
+    /* large sizes with leftovers */
     (1LL << 20) + 1,
+    (1LL << 20) + 2,
     (1LL << 20) + 3,
 };
 
@@ -53,8 +60,8 @@ typedef struct {
 static const kernel_entry KERNELS[] = {
     { "C",          dot_product_c   },
     { "x86-64 ASM", dot_product_asm },
-    { "SIMD XMM",   dot_product_xmm },   /* stub until Person 2 delivers */
-    { "SIMD YMM",   dot_product_ymm },   /* stub until Person 3 delivers */
+    { "SIMD XMM",   dot_product_xmm },   
+    { "SIMD YMM",   dot_product_ymm },   
 };
 #define NUM_KERNELS (sizeof(KERNELS) / sizeof(KERNELS[0]))
 
@@ -62,7 +69,7 @@ static const kernel_entry KERNELS[] = {
 
 static void init_vectors(double* A, double* B, int64_t n)
 {
-    /* Formula (document this in the README):
+    /* Formula:
      *     A[i] = sin(i * 0.001)
      *     B[i] = cos(i * 0.002)
      */
@@ -81,25 +88,56 @@ static double abs_product_sum(const double* A, const double* B, int64_t n)
     return s;
 }
 
-/* Runs fn RUNS times, returns average time in milliseconds.
- * Only the kernel call sits between the two counter reads. */
-static double time_kernel(dot_kernel_fn fn, int64_t n,
+/* Statistics over the RUNS timed calls of one kernel, all in milliseconds. */
+typedef struct {
+    double avg;
+    double min;
+    double max;
+    double sd;      /* sample standard deviation */
+} timing_stats;
+
+/* Runs fn RUNS times and returns avg/min/max/sd in milliseconds.
+ * Only the kernel call sits between the two counter reads;
+ * the statistics are computed after all timed runs finish. */
+static timing_stats time_kernel(dot_kernel_fn fn, int64_t n,
     const double* A, const double* B, double* Z)
 {
     LARGE_INTEGER freq, t0, t1;
+    double run_ms[RUNS];
+    timing_stats s;
+
     QueryPerformanceFrequency(&freq);
 
-    fn(n, A, B, Z);   /* warm-up run, not timed (TODO: mention in README) */
+    fn(n, A, B, Z);   /* warm-up run, not timed */
 
-    double total_ms = 0.0;
     for (int r = 0; r < RUNS; r++) {
         QueryPerformanceCounter(&t0);
         fn(n, A, B, Z);
         QueryPerformanceCounter(&t1);
-        total_ms += (double)(t1.QuadPart - t0.QuadPart) * 1000.0
+        run_ms[r] = (double)(t1.QuadPart - t0.QuadPart) * 1000.0
             / (double)freq.QuadPart;
     }
-    return total_ms / RUNS;
+
+    /* average, min, max */
+    double total = 0.0;
+    s.min = run_ms[0];
+    s.max = run_ms[0];
+    for (int r = 0; r < RUNS; r++) {
+        total += run_ms[r];
+        if (run_ms[r] < s.min) s.min = run_ms[r];
+        if (run_ms[r] > s.max) s.max = run_ms[r];
+    }
+    s.avg = total / RUNS;
+
+    /* sample standard deviation (divide by RUNS - 1) */
+    double sq = 0.0;
+    for (int r = 0; r < RUNS; r++) {
+        double d = run_ms[r] - s.avg;
+        sq += d * d;
+    }
+    s.sd = (RUNS > 1) ? sqrt(sq / (RUNS - 1)) : 0.0;
+
+    return s;
 }
 
 /* SIMD kernels add in a different order than C, so results will not be
@@ -129,7 +167,7 @@ static int run_size(int64_t n, int do_timing)
     double scale = abs_product_sum(A, B, n);
 
     double results[NUM_KERNELS];
-    double times[NUM_KERNELS];
+    timing_stats times[NUM_KERNELS];
 
     for (size_t k = 0; k < NUM_KERNELS; k++) {
         if (do_timing) {
@@ -137,7 +175,6 @@ static int run_size(int64_t n, int do_timing)
         }
         else {
             KERNELS[k].fn(n, A, B, &results[k]);
-            times[k] = 0.0;
         }
     }
 
@@ -146,8 +183,11 @@ static int run_size(int64_t n, int do_timing)
         const char* verdict = (k == 0) ? "REF"
             : (check_result(results[k], ref, scale) ? "PASS" : "FAIL");
         if (do_timing)
-            printf("%12lld  %-11s  Z = %22.12f  avg = %10.4f ms  %s\n",
-                (long long)n, KERNELS[k].name, results[k], times[k], verdict);
+            printf("%12lld  %-11s  Z = %22.12f  avg = %10.4f  min = %10.4f"
+                "  max = %10.4f  sd = %8.4f ms  %s\n",
+                (long long)n, KERNELS[k].name, results[k],
+                times[k].avg, times[k].min, times[k].max, times[k].sd,
+                verdict);
         else
             printf("%12lld  %-11s  Z = %22.12f  %s\n",
                 (long long)n, KERNELS[k].name, results[k], verdict);
@@ -159,7 +199,7 @@ static int run_size(int64_t n, int do_timing)
     return 0;
 }
 
-/* ---------------- main ---------------- */
+
 
 int main(void)
 {

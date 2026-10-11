@@ -1,146 +1,466 @@
 # CSC612M SIMD Vector Dot Product
 
-**Author:** Kim, JM, Jean  
-**Course:** CSC612M - Advanced Computer Architecture  
-**Topic:** Scalar C, x86-64 assembly, XMM SIMD, and YMM SIMD dot-product kernels
+**Group members:** Jean, JM, Kim
+**Course:** CSC612M - Advanced Computer Architecture
 
-## Project Overview
+<!--
+HOW TO USE THIS TEMPLATE
+- [FILL: ...]  = something you must write or measure.
+- HTML comments like this one are guiding questions. They don't show on GitHub,
+  but delete them before submitting anyway.
+- Screenshots go in an images/ folder in the repo and are embedded with
+  ![caption](images/file.png) so they appear INLINE (spec: no external links).
+-->
 
-This project computes the dot product of two double-precision vectors:
+## 1. Project Overview
+
+<!--
+- What does the program compute, in one sentence?
+- Write the formula: Z = sum of A[i] * B[i], i = 0 .. n-1
+- Why compare four versions of the same computation? What question is the project answering?
+-->
+
+This project is designed to showcase the performance of different SIMD and non SIMD compute kernels that all compute for the vector dot product Z = Σ A[i]·B[i] for i = 0 … n−1.
+The dot product formula can also be illustrated as:
 
 $$Z = \sum_{i=0}^{n-1} A_i B_i$$
 
 It compares four implementations using a shared C driver. The C result is the reference for correctness checks.
 
-| Kernel | Implementation |
+ As specified by the project specifications, A and B are double-precision vectors, n is an integer and Z is a double. C, x86-64 assembly(non-SIMD), SIMD XMM and SIMD YMM are the 4 versions of the same computation, with the goal of finding out the specific performance levels of each variant and how do they stack up against one another. 
+
+
+| Kernel | File | Elements per instruction | Author |
+| --- | --- | --- | --- |
+| C | `dot_product_c.c` | 1 | Kim |
+| x86-64 (non-SIMD) | `dot_product_asm.asm` | 1 | Kim |
+| SIMD XMM | `dot_product_xmm.asm` | 2 (128-bit / 64-bit double) | [FILL] |
+| SIMD YMM | `dot_product_ymm.asm` | 4 (256-bit / 64-bit double) | [FILL] |
+
+## 2. Test Environment
+
+<!--
+Without this, nobody can interpret your timings. Find the cache sizes from
+Task Manager > Performance > CPU, or the CPU's spec page.
+Were ALL timings measured on this machine? If any came from a GitHub Actions
+runner, say so here.
+-->
+
+| Item | Value |
 | --- | --- |
-| C | Scalar loop in `dot_product_c.c` |
-| x86-64 ASM | Scalar floating-point instructions in `dot_product_asm.asm` |
-| SIMD XMM | Two doubles per 128-bit operation in `dot_product_xmm.asm` |
-| SIMD YMM | Four doubles per 256-bit operation in `dot_product_ymm.asm` |
+| CPU | intel Core Ultra 5 |
+| Cores / threads | 8 |
+| L1d / L2 / L3 cache | 832KB/14MB/8MB |
+| RAM | LPDDR5 16GB 8500M/T |
+| OS | Windows 11 |
+| Visual Studio version / toolset | 2026 |
+| NASM version | [FILL: run `nasm -v` in a terminal] |
 
-The assembly uses NASM syntax and the Windows x64 calling convention. The common project interface is declared in `kernels.h`: `n`, `A`, `B`, and an output pointer `Z` are passed in that order. On Windows x64 these arrive in `RCX`, `RDX`, `R8`, and `R9` respectively.
+## 3. Program Design and Methodology
 
-## Input Initialization
+### 3.1 Shared interface (`kernels.h`)
 
-The driver initializes the vectors deterministically:
+<!--
+- What is the common signature every kernel uses?
+- Under the Windows x64 calling convention, which register holds n, A, B, Z?
+- Why does Z come back through a pointer instead of a return value? (Or: why
+  is either choice fine, and why did you pick this one?)
+- Why freeze the interface before anyone writes a kernel?
+-->
+
+The common signature that every kernel variant uses has the parameters: int64_t n, const double* A, const double* B, double* Z. The shared interface will allow for a standard and streamlined way for the kernels to access the memory and minimizing any possible side effects in timing performance.  
+
+These correspond to the registers relevant to the Windows x86-64 calling convention.
+
+```c
+void kernel(int64_t n, const double* A, const double* B, double* Z);
+```
+
+| Parameter | Register (Windows x64) | Meaning |
+| --- | --- | --- |
+| `n` | RCX | number of elements |
+| `A` | RDX | pointer to first vector |
+| `B` | R8 | pointer to second vector |
+| `Z` | R9 | pointer to the output scalar |
+
+### 3.2 Input initialization (spec item 5)
+
+<!--
+- State the exact formula used for A[i] and B[i].
+- Why a fixed formula instead of random numbers?
+-->
+
+The exact formula for initializing vectors A and B are:
 
 ```text
 A[i] = sin(i * 0.001)
 B[i] = cos(i * 0.002)
 ```
 
-This makes runs repeatable and provides nontrivial floating-point data.
+The will ensure each kernel's performance will be fairly comparable since the sizes and contents of the vectors should be the same. 
 
-## Building and Running
+### 3.3 Timing method (spec items 2 and 4)
 
-This is a Windows x64 Visual Studio project; `main.c` uses Windows timing and aligned-allocation APIs. A native x86-64 Windows environment is recommended for AVX/YMM validation and performance measurements.
+<!--
+- Which timer did you use and why?
+- What is INSIDE the timed region? What is deliberately OUTSIDE it?
+- Why is there one untimed warm-up call? What happens to the average without it?
+- How many timed runs, and how is the reported number computed?
+-->
 
-Prerequisites:
+The group opted for QueryPerformanceFrequency and QueryPerformanceCounter as the performance timers for the program. These are included from windows.h and thus are windows native methods to measuring performance metrics. 
 
-- Visual Studio with the Desktop development with C++ workload and the project toolset (`v145`).
-- NASM installed and available as `nasm` on `PATH`.
-- An x86-64 processor/runner with AVX support to execute the XMM/YMM kernels.
+`QueryPerformanceCounter` reads a high-resolution hardware counter, and `QueryPerformanceFrequency` gives the number of counter ticks per second. Elapsed time in milliseconds is therefore `(t1 - t0) × 1000 / frequency`. Its resolution is well below a microsecond, which matters because our smallest benchmark (2^20 with the YMM kernel) takes only about half a millisecond. The standard C `clock()` function is far too coarse for that.
 
-Open `ConsoleApplication1.slnx`, choose the `x64` platform and either `Debug` or `Release`, then build and run the console application. The project assembles each `.asm` file with `nasm -fwin64` and writes its object file into the Visual Studio intermediate directory.
+#### What is timed
 
-The GitHub Actions workflow in `.github/workflows/build.yml` builds and runs the `Debug|x64` configuration on `windows-latest`. It does not currently build Release, upload screenshots, or fail the job based on printed `FAIL` lines; inspect the program output when using CI as validation.
+Only the kernel call sits between the two counter reads:
 
-## Kernel Notes
-
-- **C:** Accumulates `A[i] * B[i]` in a scalar `double` and stores the result through `Z`.
-- **Scalar assembly:** Uses `movsd`, `mulsd`, and `addsd` to process one product per iteration.
-- **XMM:** Processes pairs with packed double operations, reduces the two accumulated lanes, then handles an odd leftover element.
-- **YMM:** Processes groups of four with packed double operations, reduces the four partial sums, then handles `n % 4` leftover elements. The assembly uses 256-bit AVX YMM operations; the assignment describes this kernel as AVX2/YMM.
-
-The XMM and YMM reductions change the order of floating-point additions. Their results can therefore differ slightly from the sequential C result without indicating an error.
-
-## Correctness and Boundary Tests
-
-The driver compares each non-C result against the C reference using:
-
-```text
-abs(result - reference) <= 1e-9 * sum(abs(A[i] * B[i]))
+```c
+QueryPerformanceCounter(&t0);
+fn(n, A, B, Z);              /* the kernel, nothing else */
+QueryPerformanceCounter(&t1);
 ```
 
-The scale avoids an overly strict absolute tolerance when the reference is near zero. The driver currently runs untimed tests for `n = 1, 2, 3, 5, 7, 1003, 1048577, 1048579`. These exercise all modulo-four remainders, including sizes smaller than one YMM vector.
+Everything else is deliberately outside the timed region:
 
-The assignment's Person 3 checklist specifically asks for `n = 1000, 1001, 1002, 1003, 1004`. Only `1003` is in the current shared test list; coordinate with Person 1 to add the other requested sizes before claiming that exact checklist is complete.
+| Outside the timer | Why |
+| --- | --- |
+| Allocating A and B (`_aligned_malloc`) | One-time setup cost, not part of the dot product |
+| Filling A and B (`init_vectors`) | Computing about 2 × 268 million sin/cos values takes seconds and would dwarf the kernel time |
+| Computing the tolerance scale (sum of \|A[i]·B[i]\|) | Only used for the correctness check |
+| Comparing results and printing | Done after all timing finishes |
+| Computing the statistics (avg, min, max, sd) | Done after all timed runs finish |
 
-### Correctness Output
+All four kernels receive the same A and B arrays for a given n, so every kernel is timed on identical data.
 
-The following results were supplied with the project report. They show all four kernels passing the listed cases; rerun the current integrated build before treating this excerpt as current verification evidence.
+#### Warm-up run
+
+Before the timed runs, each kernel is called once without timing. The first pass over freshly allocated memory triggers page faults, because Windows only maps physical memory to a page the first time it is touched. The first pass also starts with cold caches. Without the warm-up, the first timed run would include these one-time costs and push the average up.
+
+#### Repetitions and reported statistics
+
+Each kernel is timed **30 times** per vector size (spec item 4). Each run's time is stored, and after the 30th run the program computes:
+
+| Statistic | Formula | Use |
+| --- | --- | --- |
+| Average | sum of run times / 30 | The reported execution time, as the spec requires |
+| Min | fastest of the 30 runs | Closest to the kernel's undisturbed speed, since interference only makes runs slower |
+| Max | slowest of the 30 runs | Shows whether any run was interrupted |
+| Standard deviation | sample SD (divide by 29) | Spread within the 30 runs; SD / average gives the coefficient of variation (CV) |
+
+The tables in Section 8 report the average. Min, max and SD are used in Section 9 to judge whether a difference between two kernels is larger than the measurement noise: if two kernels' averages differ by less than their standard deviations, we treat them as tied.
+
+#### Controlled measurement procedure
+
+Our exploratory runs (Section 10) showed large run-to-run variation on the test laptop. The same kernel at the same size differed by up to about 25% between runs (for example, C at 2^28 measured 1504, 1207 and 1509 ms in three runs). To make the final numbers reliable, every reported run followed the same fixed conditions:
+
+- charger plugged in, Windows power mode set to *Best performance*;
+- browsers, chat apps and cloud sync closed;
+- laptop on a hard, flat surface;
+- program started with **Ctrl+F5** (Start Without Debugging), so no debugger is attached;
+- a short pause after closing apps before the first run;
+- the same benchmark sizes in every run: 2^20, 2^26 and 2^28.
+
+Each build configuration (Debug and Release) was run **3 times in a row** with nothing changed in between. For each kernel and size, the README tables report the **median** of the three 30-run averages, with the lowest and highest averages as the run-to-run range. The median is used instead of the mean so that a single disturbed run cannot pull the result off. All runs are recorded in our run log spreadsheet, and each reported run has a matching screenshot.
+
+After the main runs, we added two small sizes that fit in the CPU caches (2^12 and 2^15, Section 8.3). These were measured under the same fixed conditions, but with **one run per build** rather than three, so they are reported as single-run averages.
+
+### 3.4 Vector sizes and memory (spec item 3)
+
+Each vector holds n doubles of 8 bytes, so A and B together need n × 16 bytes.
+
+| n | Elements | Memory for A + B | Result |
+| --- | ---: | ---: | --- |
+| 2^12 | 4,096 | 64 KiB | Benchmarked (cache-size run) |
+| 2^15 | 32,768 | 512 KiB | Benchmarked (cache-size run) |
+| 2^20 | 1,048,576 | 16 MiB | Benchmarked |
+| 2^26 | 67,108,864 | 1 GiB | Benchmarked |
+| 2^28 | 268,435,456 | 4 GiB | Benchmarked; **largest size used** |
+| 2^29 | 536,870,912 | 8 GiB | Allocated, but thrashed; not used |
+| 2^30 | 1,073,741,824 | 16 GiB | Failed to allocate, or allocated into the page file and never finished; not used |
+
+The test laptop has 16 GB of RAM, part of which is always in use by Windows and other programs.
+
+- **2^30 (16 GiB):** the first attempt failed to allocate. After closing other programs, the allocation succeeded, but the program never finished. `_aligned_malloc` only reserves *virtual* memory, which Windows can back with the page file on the SSD, so the allocation "succeeding" did not mean the data fit in RAM.
+- **2^29 (8 GiB):** the allocation succeeded, but Task Manager showed the program thrashing: system memory at 97%, disk at 95%, the program itself writing about 145 MB/s to disk although it never opens a file, only about 3.1 GB of its 8 GB resident in RAM, and only 5.8% CPU use. Timings from such a run would measure the SSD, not memory.
+- **2^28 (4 GiB)** fits comfortably in physical RAM, so it is the largest size we report, as the specification allows.
+
+### 3.5 Correctness method (spec item 6)
+
+<!--
+- Why is the C version the reference?
+- Why can't you compare with == ?
+- What is the tolerance formula, and why scale it by sum|A[i]*B[i]| instead of |Z|?
+- Which kernel should match C EXACTLY, and why?
+-->
+
+Tolerance used by the driver:
 
 ```text
-n         C reference             Scalar ASM             XMM                    YMM
-1         0.000000000000           PASS                   PASS                   PASS
-2         0.000999997833           PASS                   PASS                   PASS
-3         0.002999980500           PASS                   PASS                   PASS
-5         0.009999783335           PASS                   PASS                   PASS
-7         0.020999044512           PASS                   PASS                   PASS
-1003      100.935634783182         PASS                   PASS                   PASS
-1048577   134.781920612681         PASS                   PASS                   PASS
-1048579   134.596594493716         PASS                   PASS                   PASS
+PASS  if  |Z_kernel - Z_C| <= 1e-9 * sum(|A[i] * B[i]|)
 ```
 
-### Screenshots
+[FILL]
 
-Add the required screenshots after capturing them from the final integrated executable:
+### 3.6 Build configurations
 
-- `[TODO: insert program output and timing screenshot for all benchmark cases]`
-- `[TODO: insert C correctness screenshot]`
-- `[TODO: insert scalar x86-64 assembly correctness screenshot]`
-- `[TODO: insert XMM correctness and boundary screenshots]`
-- `[TODO: insert YMM correctness and boundary screenshots]`
+<!--
+- What changes between Debug and Release?
+- Which kernels does that change affect, and which can it NOT affect? Why?
+-->
 
-## Timing Methodology
+[FILL]
 
-The driver benchmarks `n = 2^20`, `2^26`, and `2^28`. Each kernel receives one untimed warm-up call, followed by 30 timed calls. Only the kernel function call is between the performance-counter reads; vector initialization, allocation, and correctness-scale calculation are outside the timed region. The displayed time is the average of the 30 timed calls.
+## 4. Kernel Implementations
 
-The source contains the benchmark sizes and methodology, but the measurements below do not identify the build configuration, processor, memory configuration, or compiler settings. Record those details alongside the final Debug and Release measurements; do not assume this single table satisfies both-build reporting.
+<!-- Short description each. Persons 2 and 3 may write their own subsections. -->
 
-At `n = 2^28`, each vector occupies 2 GiB, for 4 GiB total input data. The largest size may need to be reduced on machines with insufficient available memory.
+### 4.1 C
+<!-- Loop structure, accumulator choice, why it is the "answer key". -->
+[FILL]
 
-## Supplied Benchmark Results
+### 4.2 x86-64 (non-SIMD)
+<!--
+- Which instructions, and how does each map to a line of the C loop?
+- Why does "non-SIMD" still use XMM registers?
+- How is n <= 0 handled?
+-->
 
-The following measurements and outputs were provided for this report. Speedup is calculated as `C average time / kernel average time`. Build mode and test-machine specifications were not included with the supplied values.
+| C | x86-64 |
+| --- | --- |
+| `double sum = 0.0;` | `xorpd xmm0, xmm0` |
+| skip if `n <= 0` | `test rcx, rcx` / `jle .done` |
+| `A[i] * B[i]` | `movsd xmm1, [rdx]` / `mulsd xmm1, [r8]` |
+| `sum += ...` | `addsd xmm0, xmm1` |
+| `i++` | `add rdx, 8` / `add r8, 8` / `dec rcx` |
+| loop while elements remain | `jnz .loop` |
+| `*Z = sum;` | `movsd [r9], xmm0` |
 
-| Vector size | Elements | Kernel | Output Z | Average (ms) | Speedup vs. C |
-| --- | ---: | --- | ---: | ---: | ---: |
-| $2^{20}$ | 1,048,576 | C | 134.872794645111 | 4.1144 | 1.00x |
-| $2^{20}$ | 1,048,576 | x86-64 ASM | 134.872794645111 | 1.0252 | 4.01x |
-| $2^{20}$ | 1,048,576 | SIMD XMM | 134.872794645113 | 0.5551 | 7.41x |
-| $2^{20}$ | 1,048,576 | SIMD YMM | 134.872794645121 | 0.3645 | 11.29x |
-| $2^{26}$ | 67,108,864 | C | -585.732854649973 | 256.8256 | 1.00x |
-| $2^{26}$ | 67,108,864 | x86-64 ASM | -585.732854649973 | 69.9938 | 3.67x |
-| $2^{26}$ | 67,108,864 | SIMD XMM | -585.732854650150 | 43.1829 | 5.95x |
-| $2^{26}$ | 67,108,864 | SIMD YMM | -585.732854650142 | 38.3548 | 6.70x |
-| $2^{28}$ | 268,435,456 | C | 72.826491389550 | 1030.1068 | 1.00x |
-| $2^{28}$ | 268,435,456 | x86-64 ASM | 72.826491389550 | 279.2728 | 3.69x |
-| $2^{28}$ | 268,435,456 | SIMD XMM | 72.826491389638 | 178.6872 | 5.76x |
-| $2^{28}$ | 268,435,456 | SIMD YMM | 72.826491389353 | 160.1395 | 6.43x |
+[FILL]
 
-### Performance Discussion
+### 4.3 SIMD XMM
+<!-- Main loop width, horizontal reduction, tail handling. -->
+[FILL]
 
-In the supplied measurements, YMM is the fastest kernel at every listed size. At `n = 2^28`, its average is about 6.43 times faster than C and about 1.12 times faster than XMM. Although YMM processes twice as many doubles per packed operation as XMM, it is not twice as fast: wider arithmetic does not guarantee a proportional end-to-end speedup.
+### 4.4 SIMD YMM
+<!--
+- Main loop width, reduction of 4 lanes, tail handling, vzeroupper and why.
+- Note: vmulpd/vaddpd on YMM are AVX, not AVX2 instructions. What did the
+  instructor say about this?
+-->
+[FILL]
 
-For large vectors, the kernel must read 4 GiB of input data per call at `n = 2^28`. Once data movement becomes a bottleneck, memory bandwidth and cache behavior can limit the benefit of additional SIMD width. Smaller inputs may fit more readily in cache and show different relative performance. These measurements alone do not establish the bottleneck; hardware counters or controlled cache/bandwidth experiments would be needed to confirm it.
+## 5. Program Output and Execution Times (spec item i)
 
-SIMD addition is performed in a different order from the scalar C loop, so small differences in the final decimal places are expected under IEEE 754 floating-point arithmetic. The provided results are within the driver's stated tolerance.
+<!-- One full-output screenshot per build. Can a reader see build type, n, kernel, Z, time, PASS/FAIL? -->
 
-The reported scalar-assembly and SIMD speedups depend on build configuration and compiler optimization. Since the supplied table does not say whether it came from Debug or Release, avoid attributing the gains solely to reduced loop overhead until both configurations and their generated code have been compared.
+### Debug
+![Debug output](images/debug_output.png)
 
-## Problems and Methodology Notes
+### Release
+![Release output](images/release_output.png)
 
-- The development machine is an Apple Silicon Mac. It cannot execute x86-64 AVX/YMM instructions natively, so local timings on the Mac are not suitable for this x86-64 kernel comparison.
-- The project uses Windows APIs and the Windows x64 calling convention. The provided GitHub Actions workflow is the available x64 Windows build/run path, but results should include the runner and build configuration for reproducibility.
-- The Visual Studio project previously used a machine-specific NASM path. It now resolves `nasm` through `PATH`, allowing the local build and workflow to use an installed NASM executable.
-- The assignment asks for both Debug and Release results. The current workflow covers Debug only; run and report Release separately.
-- The YMM kernel's packed double instructions use the AVX instruction subset for 256-bit floating-point vectors; those particular operations are not AVX2-only. Confirm the course rubric accepts this instruction selection for its AVX2/YMM requirement.
+## 6. Correctness Checks (spec items iii-vi)
 
-## Remaining Report Items
+<!-- Under each screenshot, one or two sentences: does Z match C exactly or within tolerance, and why? -->
 
-- Add the requested screenshots from the final integrated run.
-- Add explicit `1000` through `1004` boundary tests in coordination with the shared-driver owner, then capture their results.
-- Record separate Debug and Release timing tables and the CPU/compiler environment.
-- Confirm whether the YMM instruction selection meets the instructor's AVX2 requirement.
+### 6.1 C
+![C correctness](images/correct_c.png)
+[FILL: caption]
+
+### 6.2 x86-64
+![x86-64 correctness](images/correct_asm.png)
+[FILL: caption]
+
+### 6.3 SIMD XMM
+![XMM correctness](images/correct_xmm.png)
+[FILL: caption]
+
+### 6.4 SIMD YMM
+![YMM correctness](images/correct_ymm.png)
+[FILL: caption]
+
+## 7. Boundary Checks (spec items 3a and vii)
+
+<!--
+- Which sizes were tested? (Include 1000-1004 from the checklist.)
+- What would the output look like if the tail code were missing?
+- Why is n = 1 an interesting case for YMM?
+-->
+
+Elements handled by the packed main loop vs. the scalar tail:
+
+| n | n mod 2 | XMM main / tail | n mod 4 | YMM main / tail | Result |
+| ---: | ---: | --- | ---: | --- | --- |
+| 1000 | 0 | 1000 / 0 | 0 | 1000 / 0 | [FILL] |
+| 1001 | 1 | 1000 / 1 | 1 | 1000 / 1 | [FILL] |
+| 1002 | 0 | 1002 / 0 | 2 | 1000 / 2 | [FILL] |
+| 1003 | 1 | 1002 / 1 | 3 | 1000 / 3 | [FILL] |
+| 1004 | 0 | 1004 / 0 | 0 | 1004 / 0 | [FILL] |
+
+![XMM and YMM boundary check](images/boundary.png)
+
+## 8. Comparative Results (spec item ii)
+
+All times are in milliseconds.
+
+- **Median avg:** the median of the three 30-run averages (runs 1–3 of each build).
+- **Range:** the lowest and highest of those three averages.
+- **Speedup vs C** = median C time ÷ median kernel time.
+- **Bandwidth** = bytes read (n × 16) ÷ median time.
+
+### 8.1 Debug
+
+| n | Kernel | Median avg (ms) | Range across runs (ms) | Speedup vs C | Bandwidth (GB/s) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 2^20 | C | 2.4705 | 2.4605 – 2.5032 | 1.00x | 6.79 |
+| 2^20 | x86-64 | 0.6201 | 0.6173 – 0.6960 | 3.98x | 27.06 |
+| 2^20 | XMM | 0.4727 | 0.4591 – 0.5583 | 5.23x | 35.49 |
+| 2^20 | YMM | 0.4756 | 0.4589 – 0.4942 | 5.19x | 35.28 |
+| 2^26 | C | 167.1264 | 157.1306 – 170.4851 | 1.00x | 6.42 |
+| 2^26 | x86-64 | 44.2455 | 43.0278 – 45.4561 | 3.78x | 24.27 |
+| 2^26 | XMM | 37.1867 | 34.1413 – 37.3310 | 4.49x | 28.87 |
+| 2^26 | YMM | 37.9006 | 30.3829 – 38.5892 | 4.41x | 28.33 |
+| 2^28 | C | 683.1042 | 658.8420 – 693.5426 | 1.00x | 6.29 |
+| 2^28 | x86-64 | 189.1831 | 175.6641 – 192.6923 | 3.61x | 22.70 |
+| 2^28 | XMM | 153.4102 | 143.6915 – 154.7330 | 4.45x | 28.00 |
+| 2^28 | YMM | 142.1351 | 124.8271 – 164.3985 | 4.81x | 30.22 |
+
+### 8.2 Release
+
+| n | Kernel | Median avg (ms) | Range across runs (ms) | Speedup vs C | Bandwidth (GB/s) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 2^20 | C | 0.6317 | 0.6266 – 0.7006 | 1.00x | 26.56 |
+| 2^20 | x86-64 | 0.6349 | 0.6199 – 0.6359 | 0.99x | 26.42 |
+| 2^20 | XMM | 0.4674 | 0.4655 – 0.4885 | 1.35x | 35.89 |
+| 2^20 | YMM | 0.4455 | 0.4324 – 0.4514 | 1.42x | 37.66 |
+| 2^26 | C | 44.1979 | 43.8354 – 44.2263 | 1.00x | 24.29 |
+| 2^26 | x86-64 | 56.4042* | 44.9396 – 57.4694 | 0.78x* | 19.04* |
+| 2^26 | XMM | 35.2434 | 33.9290 – 38.5982 | 1.25x | 30.47 |
+| 2^26 | YMM | 30.9399 | 30.1517 – 32.4552 | 1.43x | 34.70 |
+| 2^28 | C | 179.7584 | 171.0131 – 251.7901 | 1.00x | 23.89 |
+| 2^28 | x86-64 | 179.1997 | 176.9538 – 189.7283 | 1.00x | 23.97 |
+| 2^28 | XMM | 143.0114 | 142.6692 – 166.9440 | 1.26x | 30.03 |
+| 2^28 | YMM | 124.9712 | 124.9707 – 133.6581 | 1.44x | 34.37 |
+
+\* In runs 2 and 3, a few of the 30 calls took about 175–185 ms while the rest took about 43 ms, which raised those runs' averages. The fastest calls (about 42–43 ms) match C, so the real Release scalar-ASM speed at 2^26 is about the same as C, not slower.
+
+The 2^28 C range is wide (171–252 ms) because run 1 was disturbed (its slowest call took 484 ms); the median is not affected by that one run.
+
+### 8.3 Cache-size runs (single run per build)
+
+These sizes fit in the CPU caches: 64 KiB (2^12) and 512 KiB (2^15) of data. Times are printed to 0.0001 ms (0.1 µs), so the 2^12 figures carry roughly ±10% rounding error; 2^15 is the more reliable of the two.
+
+| Build | n | Kernel | Avg (ms) | Speedup vs C | Speedup vs scalar ASM | Bandwidth (GB/s) |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Debug | 2^12 | C | 0.0093 | 1.00x | 0.20x | 7.05 |
+| Debug | 2^12 | x86-64 | 0.0019 | 4.89x | 1.00x | 34.49 |
+| Debug | 2^12 | XMM | 0.0009 | 10.33x | 2.11x | 72.82 |
+| Debug | 2^12 | YMM | 0.0006 | 15.50x | 3.17x | 109.23 |
+| Debug | 2^15 | C | 0.0745 | 1.00x | 0.21x | 7.04 |
+| Debug | 2^15 | x86-64 | 0.0153 | 4.87x | 1.00x | 34.27 |
+| Debug | 2^15 | XMM | 0.0077 | 9.68x | 1.99x | 68.09 |
+| Debug | 2^15 | YMM | 0.0044 | 16.93x | 3.48x | 119.16 |
+| Release | 2^12 | C | 0.0026 | 1.00x | 0.92x | 25.21 |
+| Release | 2^12 | x86-64 | 0.0024 | 1.08x | 1.00x | 27.31 |
+| Release | 2^12 | XMM | 0.0012 | 2.17x | 2.00x | 54.61 |
+| Release | 2^12 | YMM | 0.0007 | 3.71x | 3.43x | 93.62 |
+| Release | 2^15 | C | 0.0146 | 1.00x | 1.00x | 35.91 |
+| Release | 2^15 | x86-64 | 0.0146 | 1.00x | 1.00x | 35.91 |
+| Release | 2^15 | XMM | 0.0073 | 2.00x | 2.00x | 71.82 |
+| Release | 2^15 | YMM | 0.0046 | 3.17x | 3.17x | 113.98 |
+
+The same runs also re-measured 2^20, 2^26 and 2^28; those results agree with the medians in 8.1 and 8.2 (for example, Release YMM at 2^28: 124.81 ms vs a median of 124.97 ms).
+
+## 9. Analysis (spec item viii; worth 20 points)
+
+### 9.1 Which kernel is fastest?
+
+**SIMD YMM is the fastest kernel in Release at every size**, followed by XMM, with C and scalar assembly tied for last. In Debug, YMM and XMM are effectively tied at 2^20 and 2^26 (their medians differ by less than their run-to-run range), and YMM is ahead at 2^28.
+
+The biggest change between builds is the C kernel. In Debug it is about 3.6–4.0× slower than scalar assembly; in Release it matches scalar assembly almost exactly (0.99–1.00× at 2^20 and 2^28). The two kernels do the same work in the same order, and both produce bit-identical Z. The Debug gap therefore comes entirely from compiler overhead: without optimization, the compiler keeps the running sum in memory and loads and stores it on every iteration, while our assembly keeps it in a register. With optimization enabled, the compiler produces essentially the same scalar loop we wrote by hand.
+
+Release C stays scalar: the compiler does not vectorize the loop on its own. Vectorizing would change the order of the floating-point additions, which MSVC does not do under its default floating-point model (it would need `/fp:fast`). This is why our SIMD kernels can still beat optimized C at all.
+
+The assembly kernels are unaffected by the build configuration, since compiler settings cannot change hand-written assembly. For example, YMM at 2^28 takes 142 ms (Debug median) vs 125 ms (Release median), and 126 ms vs 125 ms in the single cache-size runs; the remaining gap is within the run-to-run variation.
+
+### 9.2 Expected vs measured speedup
+
+Ignoring memory, the expected speedup over scalar code equals the number of doubles processed per instruction:
+
+| Kernel | Doubles per instruction | Expected vs scalar | Measured, in cache (2^15, Release) | Measured, large sizes (2^20–2^28, Release) |
+| --- | ---: | ---: | ---: | ---: |
+| XMM | 2 | 2x | 2.00x | 1.25–1.35x |
+| YMM | 4 | 4x | 3.17x (3.43x at 2^12) | 1.42–1.44x |
+
+When the data fits in cache, the measurements match theory: XMM is exactly twice as fast as scalar code, and YMM reaches 3.2–3.4× of its theoretical 4×. This shows the SIMD kernels are implemented correctly and can deliver their full width.
+
+At the benchmark sizes required by the specification (2^20, 2^26, 2^28), the speedup collapses to about 1.3× for XMM and 1.4× for YMM, and it barely changes between those three sizes.
+
+### 9.3 Why the speedup falls short: memory-bound or compute-bound?
+
+**Work per element.** Each element needs two 8-byte loads (A[i] and B[i]) and only two floating-point operations (one multiply, one add). The loop reads 16 bytes for every 2 operations and never reuses any data, so it does very little arithmetic for each byte it must fetch.
+
+**Data size vs cache size.** The test CPU has 8 MB of L3 cache, and each core can use only part of the 14 MB total L2.
+
+| n | Data (A + B) | Where the data lives |
+| --- | ---: | --- |
+| 2^12 | 64 KiB | close to the L1 data cache |
+| 2^15 | 512 KiB | fits in one core's L2 |
+| 2^20 | 16 MiB | larger than L3: mostly streamed from RAM |
+| 2^26 | 1 GiB | RAM |
+| 2^28 | 4 GiB | RAM |
+
+All three specification sizes are larger than the caches, which is why their speedups are nearly identical.
+
+**The bandwidth ceiling.** Once data comes from RAM, every kernel runs into the same limit. In Release, scalar code reaches about 24–27 GB/s, XMM about 30–36 GB/s and YMM about 34–38 GB/s. Doubling the SIMD width from XMM to YMM gains only about 1.1–1.15×. In cache, the same YMM kernel reaches about 114 GB/s at 2^15, roughly three times its out-of-cache rate.
+
+The machine's theoretical memory bandwidth is about 136 GB/s (8,533 MT/s × 16 bytes, assuming a 128-bit LPDDR5X memory bus), so our best single-threaded figure is about a quarter of it. This is expected for one core: a core can only have a limited number of cache-line requests in flight, and with a memory latency on the order of 100 ns, that caps how fast one core can pull data. Using the full bandwidth would require several cores working in parallel, which is outside this assignment.
+
+**Why YMM still helps a little.** Fewer instructions per element leave the CPU more room to issue loads early, so it spends slightly less time waiting. But it is still waiting for memory most of the time, so the gain is small.
+
+**What limits the in-cache case.** At 2^15, scalar code takes about 0.45 ns per element. Each iteration ends with an addition that must wait for the previous iteration's addition, because all elements are summed into one accumulator. XMM still performs one dependent addition per iteration but covers two elements, so it is exactly 2× faster; YMM covers four. YMM falls somewhat short of 4×, most likely because loading 64 bytes per iteration starts to limit it. Using several independent accumulators would shorten this dependency chain; we did not test this.
+
+**Measurement noise.** On the test laptop, results varied by up to about 25% between uncontrolled runs, and even in controlled runs, single calls were occasionally 2–4× slower than the rest (for example, the Release 2^26 scalar-assembly outliers in Section 8.2). Because memory-bound kernels all hit the same bandwidth limit, small disturbances can reorder kernels whose times are close. We therefore treat differences smaller than the run-to-run range as ties.
+
+### 9.4 AHAness answers
+
+**Is this kernel memory-bound or compute-bound?** At the specification's sizes (2^20 and above), it is **memory-bound**. All kernels level off at a similar bandwidth of about 24–38 GB/s regardless of SIMD width, and wider SIMD gains only 1.3–1.4×. It becomes compute-bound only when the data fits in cache: at 2^15, XMM is exactly 2× and YMM about 3.2× faster than scalar code, close to their theoretical widths.
+
+**Is SIMD YMM faster than optimized (Release) C?** **Yes, but only modestly at the specification's sizes:** about 1.42–1.44× at 2^20, 2^26 and 2^28 (Section 8.2). Inside the cache, the advantage grows to about 3.2–3.7×. Most of the dramatic speedups in the Debug table (up to about 5×) come from Debug C's overhead, not from SIMD.
+
+## 10. Problems Encountered, Solutions, and AHA Moments (spec item ix)
+
+<!--
+Write from what actually happened. Possible prompts:
+- The LNK2001 unresolved-external errors: cause, how you found it, fix.
+- NASM setup (build customization vs custom build tool, PATH).
+- Did 2^30 fail to allocate? What did you decide?
+- Any correctness FAIL during development? What was the bug?
+- What surprised you in the timings?
+- What would you try next (e.g. multiple accumulators, FMA)?
+-->
+
+| Problem | Cause | Solution |
+| --- | --- | --- |
+| [FILL] | [FILL] | [FILL] |
+| [FILL] | [FILL] | [FILL] |
+
+**AHA moments:** [FILL]
+
+## 11. How to Build and Run
+
+**Prerequisites**
+
+- Windows 10/11 on an x86-64 CPU with AVX support (required for the XMM/YMM kernels)
+- Visual Studio with the *Desktop development with C++* workload
+- NASM, with its install folder added to `PATH` (check with `nasm -v`)
+
+**Steps**
+
+1. Clone the repository and open the solution file in Visual Studio.
+2. Set the platform to **x64** and the configuration to **Debug** or **Release**.
+3. Build with **Build → Rebuild Solution**. The `.asm` files are assembled with `nasm -f win64`.
+4. Run with **Debug → Start Without Debugging** (Ctrl+F5).
+5. The console prints the boundary tests first, then the timed benchmarks with PASS/FAIL for each kernel.
