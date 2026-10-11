@@ -34,8 +34,8 @@ It compares four implementations using a shared C driver. The C result is the re
 | --- | --- | --- | --- |
 | C | `dot_product_c.c` | 1 | Kim |
 | x86-64 (non-SIMD) | `dot_product_asm.asm` | 1 | Kim |
-| SIMD XMM | `dot_product_xmm.asm` | 2 (128-bit / 64-bit double) | [FILL] |
-| SIMD YMM | `dot_product_ymm.asm` | 4 (256-bit / 64-bit double) | [FILL] |
+| SIMD XMM | `dot_product_xmm.asm` | 2 (128-bit / 64-bit double) | JM |
+| SIMD YMM | `dot_product_ymm.asm` | 4 (256-bit / 64-bit double) | Jean |
 
 ## 2. Test Environment
 
@@ -48,13 +48,13 @@ runner, say so here.
 
 | Item | Value |
 | --- | --- |
-| CPU | intel Core Ultra 5 |
+| CPU | intel Core Ultra 5 226V |
 | Cores / threads | 8 |
 | L1d / L2 / L3 cache | 832KB/14MB/8MB |
 | RAM | LPDDR5 16GB 8500M/T |
 | OS | Windows 11 |
 | Visual Studio version / toolset | 2026 |
-| NASM version | [FILL: run `nasm -v` in a terminal] |
+| NASM version | 3.02rc13 |
 
 ## 3. Program Design and Methodology
 
@@ -282,11 +282,32 @@ The kernel is a direct translation of the formula: one loop over i = 0 … n −
 This simplicity is what makes it the answer key (Section 3.5): it adds the elements one at a time, in order, and has no extra code paths where a bug could hide. The C kernel is compiled by MSVC, so it is the only kernel whose speed depends on the build configuration (Section 3.6).
 
 ### 4.2 x86-64 (non-SIMD)
-<!--
-- Which instructions, and how does each map to a line of the C loop?
-- Why does "non-SIMD" still use XMM registers?
-- How is n <= 0 handled?
--->
+
+File: `dot_product_asm.asm` (NASM syntax, Windows x64 calling convention)
+
+```nasm
+dot_product_asm:
+    xorpd   xmm0, xmm0          ; sum = 0.0
+
+    test    rcx, rcx            ; n <= 0 ?  -> nothing to add
+    jle     .done
+
+.loop:
+    movsd   xmm1, [rdx]         ; xmm1 = A[i]
+    mulsd   xmm1, [r8]          ; xmm1 = A[i] * B[i]
+    addsd   xmm0, xmm1          ; sum += A[i] * B[i]
+
+    add     rdx, 8              ; next A element (8 bytes per double)
+    add     r8, 8               ; next B element
+    dec     rcx                 ; one fewer element left
+    jnz     .loop
+
+.done:
+    movsd   [r9], xmm0          ; *Z = sum
+    ret
+```
+
+The kernel is a line-by-line translation of the C loop:
 
 | C | x86-64 |
 | --- | --- |
@@ -298,7 +319,18 @@ This simplicity is what makes it the answer key (Section 3.5): it adds the eleme
 | loop while elements remain | `jnz .loop` |
 | `*Z = sum;` | `movsd [r9], xmm0` |
 
-[FILL]
+**Registers.** Under the Windows x64 calling convention, the four arguments arrive in RCX (n), RDX (A), R8 (B) and R9 (Z) (Section 3.1). The running sum lives in XMM0 and each product is formed in XMM1. All six registers are *volatile*: the caller does not expect them to keep their values. So the kernel needs no prologue or epilogue to save and restore registers; it starts working immediately and ends with a plain `ret`.
+
+**Pointer walking instead of an index.** Rather than computing `A + i*8` on every iteration, the kernel advances RDX and R8 by 8 bytes (one double) each time and counts RCX down from n to 0. The loop then ends with `dec rcx` / `jnz .loop`: `dec` sets the zero flag when the count reaches 0, so no separate compare instruction is needed. Overwriting RCX, RDX and R8 is safe because the caller passed n and the two pointers by value.
+
+**Multiplying straight from memory.** `mulsd xmm1, [r8]` multiplies by B[i] without first loading it into a register. Scalar SSE instructions accept a memory operand at any alignment, so this saves one instruction per element.
+
+**Handling n ≤ 0.** `test rcx, rcx` sets the flags from n, and `jle .done` skips the loop when n is zero *or negative*. Without this check, a call with n = 0 would execute the loop body once, reading A[0] and B[0] even though the arrays are empty, and `dec` would then wrap RCX below zero and keep looping through memory. With the check, the kernel simply stores 0.0, the correct result for an empty sum.
+
+**Why "non-SIMD" still uses XMM registers.** On x86-64, scalar floating-point arithmetic is done with SSE instructions that operate on the low 64 bits of an XMM register; the old x87 floating-point unit is not used. What makes this kernel non-SIMD is the instructions: the `sd` suffix in `movsd`, `mulsd` and `addsd` means *scalar double*, one value per instruction. The SIMD kernels use the *packed double* forms (`vmulpd`, `vaddpd`), which process 2 doubles in an XMM register or 4 in a YMM register.
+
+**Exact match with C.** The kernel performs the same multiply and add, one element at a time, in the same order as the C loop, with the same 64-bit double rounding. It therefore produces exactly the same Z as C at every size (difference 0 in the correctness report). Its speed is identical to Release C as well (0.99–1.00× at 2^20 and 2^28; Section 8.2), because with optimization enabled MSVC compiles the C loop into essentially this same scalar loop. In Debug, it is about 3.6–4.9× faster than C, entirely because of the Debug build's extra memory traffic (Section 3.6).
+
 
 ### 4.3 SIMD XMM
 <!-- Main loop width, horizontal reduction, tail handling. -->
@@ -342,37 +374,71 @@ After the benchmarks, the program prints a correctness report grouped by kernel.
 
 ### 6.1 C
 ![C correctness](images/correct_c.png)
-[FILL: caption]
+All entries result in success.
 
 ### 6.2 x86-64
 ![x86-64 correctness](images/correct_asm.png)
-[FILL: caption]
+All entries result in success.
 
 ### 6.3 SIMD XMM
 ![XMM correctness](images/correct_xmm.png)
-[FILL: caption]
+All entries result in success.
 
 ### 6.4 SIMD YMM
 ![YMM correctness](images/correct_ymm.png)
-[FILL: caption]
+All entries result in success.
 
 ## 7. Boundary Checks (spec items 3a and vii)
 
-<!--
-- Which sizes were tested? (Include 1000-1004 from the checklist.)
-- What would the output look like if the tail code were missing?
-- Why is n = 1 an interesting case for YMM?
--->
+#### The boundary problem
+
+XMM processes 2 doubles per iteration and YMM processes 4. When n is not a multiple of the SIMD width, some elements are left over at the end. A kernel that ignores them gives a wrong answer, and a kernel that loads a full 2- or 4-wide vector past the end of the array reads memory that doesn't belong to A or B.
+
+Both SIMD kernels handle this in three steps:
+
+1. **Main loop:** runs n ÷ width times (rounded down), processing full vectors only.
+2. **Reduction:** adds the vector's lanes together into a single sum.
+3. **Scalar tail:** adds the remaining n mod width elements one at a time, using scalar instructions that read exactly one double each.
+
+So no load ever goes past the end of the array, and every element is added exactly once.
+
+#### Sizes tested
+
+The boundary tests run before the benchmarks, untimed, for 16 sizes chosen to exercise every case:
+
+- **1 to 8:** sizes smaller than one YMM vector (1–3), exactly one or two vectors with no tail (4, 8), and every remainder mod 4. For n = 1–3, the YMM main loop runs zero times and the tail does all the work.
+- **1000 to 1004:** the sizes from our test checklist, covering remainders 0, 1, 2, 3 and 0 mod 4, and both odd and even n for XMM.
+- **2^20 + 1, + 2, + 3:** the same remainders at a large size, to show the tail still works after the main loop has run about a million times and the pointers have advanced far into the arrays.
 
 Elements handled by the packed main loop vs. the scalar tail:
 
-| n | n mod 2 | XMM main / tail | n mod 4 | YMM main / tail | Result |
-| ---: | ---: | --- | ---: | --- | --- |
-| 1000 | 0 | 1000 / 0 | 0 | 1000 / 0 | [FILL] |
-| 1001 | 1 | 1000 / 1 | 1 | 1000 / 1 | [FILL] |
-| 1002 | 0 | 1002 / 0 | 2 | 1000 / 2 | [FILL] |
-| 1003 | 1 | 1002 / 1 | 3 | 1000 / 3 | [FILL] |
-| 1004 | 0 | 1004 / 0 | 0 | 1004 / 0 | [FILL] |
+| n | n mod 2 | XMM main / tail | n mod 4 | YMM main / tail |
+| ---: | ---: | --- | ---: | --- |
+| 1 | 1 | 0 / 1 | 1 | 0 / 1 |
+| 2 | 0 | 2 / 0 | 2 | 0 / 2 |
+| 3 | 1 | 2 / 1 | 3 | 0 / 3 |
+| 4 | 0 | 4 / 0 | 0 | 4 / 0 |
+| 5 | 1 | 4 / 1 | 1 | 4 / 1 |
+| 6 | 0 | 6 / 0 | 2 | 4 / 2 |
+| 7 | 1 | 6 / 1 | 3 | 4 / 3 |
+| 8 | 0 | 8 / 0 | 0 | 8 / 0 |
+| 1000 | 0 | 1000 / 0 | 0 | 1000 / 0 |
+| 1001 | 1 | 1000 / 1 | 1 | 1000 / 1 |
+| 1002 | 0 | 1002 / 0 | 2 | 1000 / 2 |
+| 1003 | 1 | 1002 / 1 | 3 | 1000 / 3 |
+| 1004 | 0 | 1004 / 0 | 0 | 1004 / 0 |
+| 2^20 + 1 | 1 | 1,048,576 / 1 | 1 | 1,048,576 / 1 |
+| 2^20 + 2 | 0 | 1,048,578 / 0 | 2 | 1,048,576 / 2 |
+| 2^20 + 3 | 1 | 1,048,578 / 1 | 3 | 1,048,576 / 3 |
+
+
+#### What a missing tail would look like
+
+If the tail code were missing, the kernel would silently drop the leftover elements, and the correctness check would catch it with a large margin. For example, at n = 1003 the YMM kernel would drop the last three terms, which add up to about −1.06; at n = 1001 both SIMD kernels would drop the last term, about −0.35. The tolerance at these sizes is only about 1.8 × 10^-7, so either mistake would show up as a clear FAIL. The sizes with remainder 0 (4, 8, 1000, 1004) act as a control: they pass even without tail code, so a kernel that fails only at the other sizes points directly to its tail handling.
+
+#### A note on n = 1
+
+n = 1 is the most extreme case for YMM: the main loop must run zero times, the reduction must produce exactly 0, and the single element must come entirely from the tail. However, with our initialization the only term is A[0]·B[0] = sin(0)·cos(0) = 0, so Z = 0 whether or not the tail runs. A missing tail would therefore still pass at n = 1. It is n = 2 and n = 3 (also handled entirely by YMM's tail, with nonzero terms) that actually test the "tail only" path.
 
 The boundary tests run the same way in both builds; the screenshot below is from the Release run.
 
