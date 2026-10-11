@@ -162,7 +162,7 @@ Our exploratory runs (Section 10) showed large run-to-run variation on the test 
 - a short pause after closing apps before the first run;
 - the same benchmark sizes in every run: 2^20, 2^26 and 2^28.
 
-Each build configuration (Debug and Release) was run **3 times in a row** with nothing changed in between. For each kernel and size, the README tables report the **median** of the three 30-run averages, with the lowest and highest averages as the run-to-run range. The median is used instead of the mean so that a single disturbed run cannot pull the result off. All runs are recorded in our run log spreadsheet, and each reported run has a matching screenshot.
+Each build configuration (Debug and Release) was run **3 times in a row** with nothing changed in between. For each kernel and size, the README tables report the **median** of the three 30-run averages, with the lowest and highest averages as the run-to-run range. The median is used instead of the mean so that a single disturbed run cannot pull the result off. All runs are recorded in our run log spreadsheet, and each reported run has a matching screenshot (see the Appendix).
 
 After the main runs, we added two small sizes that fit in the CPU caches (2^12 and 2^15, Section 8.3). These were measured under the same fixed conditions, but with **one run per build** rather than three, so they are reported as single-run averages.
 
@@ -186,6 +186,14 @@ The test laptop has 16 GB of RAM, part of which is always in use by Windows and 
 - **2^29 (8 GiB):** the allocation succeeded, but Task Manager showed the program thrashing: system memory at 97%, disk at 95%, the program itself writing about 145 MB/s to disk although it never opens a file, only about 3.1 GB of its 8 GB resident in RAM, and only 5.8% CPU use. Timings from such a run would measure the SSD, not memory.
 - **2^28 (4 GiB)** fits comfortably in physical RAM, so it is the largest size we report, as the specification allows.
 
+![2^30 allocation failure on the first run](images/alloc_fail.png)
+
+*The first run: the 2^30 allocation (2 × 8 GB) fails.*
+
+![Task Manager during the 2^29 attempt](images/thrashing.png)
+
+*Task Manager during the 2^29 attempt: memory at 97% and disk at 95%, with the program using about 3.1 GB of RAM, 145 MB/s of disk and 5.8% CPU.*
+
 ### 3.5 Correctness method (spec item 6)
 
 <!--
@@ -195,30 +203,83 @@ The test laptop has 16 GB of RAM, part of which is always in use by Windows and 
 - Which kernel should match C EXACTLY, and why?
 -->
 
+The C kernel is the answer key; the three assembly kernels are checked against it at every size, both in the untimed boundary tests and in the benchmarks.
+
+#### Why C is the reference
+
+The C kernel is the most direct translation of the formula: it adds A[i]·B[i] one element at a time, from i = 0 to n − 1, in the same order you would write the sum by hand. It has no tail handling or lane reduction that could hide a bug, and its machine code comes from the compiler rather than being written by hand. If an assembly kernel disagrees with it, the assembly kernel is the likely culprit.
+
+#### Why the results are not compared with `==`
+
+Floating-point addition is not associative: because every addition rounds its result, `(a + b) + c` can differ from `a + (b + c)` in the last bits. XMM keeps two running sums and YMM keeps four, and they are combined only at the end, so these kernels add the same numbers in a different order than C. Their Z therefore differs from C's in the last few digits even when the code is correct; with `==`, correct SIMD kernels would fail.
+
+#### The tolerance
+
 Tolerance used by the driver:
 
 ```text
 PASS  if  |Z_kernel - Z_C| <= 1e-9 * sum(|A[i] * B[i]|)
 ```
 
-[FILL]
+The tolerance is scaled by the sum of the absolute products rather than by |Z|. Rounding error builds up in proportion to the size of the numbers being added, not the size of the final answer. With our sin/cos data, large positive and negative products cancel, so Z can be small while the running sums along the way were large (Z = 72.8 at 2^28, for example, after adding 268 million terms). A tolerance based on |Z| would be far too strict and could fail correct results; the sum of |A[i]·B[i]| measures how large the numbers were along the way, which is what the rounding error depends on.
+
+The factor 1e-9 sits between the two things the check must separate:
+
+- **Rounding differences are far smaller.** The SIMD kernels' Z differs from C's by about 2 × 10^-10 or less at every benchmark size, many orders of magnitude below the tolerance.
+- **Real bugs are far larger.** For example, if the YMM kernel forgot its tail at n = 1003, it would drop the last term (about −0.35), while the tolerance at that size is about 1.8 × 10^-7, roughly two million times smaller. Any missing, repeated or misread element is caught.
+
+The correctness report at the end of the program's output (Section 6) prints the actual difference and the tolerance for every kernel and size, so the margin is visible.
+
+#### Which kernel should match exactly
+
+The scalar x86-64 kernel performs the same multiply and add, one element at a time, in the same order, with the same 64-bit double rounding as the C loop. Identical operations in an identical order produce identical bits, so its Z matches C's **exactly** (difference 0) at every size. The SIMD kernels match only within the tolerance, for the reason above.
 
 ### 3.6 Build configurations
 
-<!--
-- What changes between Debug and Release?
-- Which kernels does that change affect, and which can it NOT affect? Why?
--->
+Every result is measured in both Visual Studio configurations, as the specification requires.
 
-[FILL]
+| | Debug | Release |
+| --- | --- | --- |
+| Optimization | Off (`/Od`) | On (`/O2`) |
+| Purpose | Easy debugging: every variable lives in memory, code follows the source line by line | Speed: variables kept in registers, redundant work removed |
+| `_DEBUG` macro | Defined | Not defined |
+
+The program prints which build it is running (`build: DEBUG` or `build: RELEASE`) by checking `_DEBUG` at compile time.
+
+**What the configuration affects.** Only code that the C compiler generates: the C kernel, and the driver around the kernels (which is not timed). In Debug, the C kernel keeps its running sum in memory and loads and stores it on every iteration; in Release, the sum stays in a register and the loop becomes essentially the same as our hand-written scalar assembly. This is why C is about 3.6–4.9× slower than scalar assembly in Debug, but equal to it in Release (Section 9.1).
+
+**What it cannot affect.** The three assembly kernels. NASM assembles them exactly as written, with the same command in both configurations (`nasm -f win64`), so the instructions that run are identical in Debug and Release. Their measured times agree between builds within run-to-run variation, which confirms this.
+
+**Release C stays scalar.** Even with optimization on, MSVC does not vectorize the C loop by default, because doing so would change the order of the floating-point additions (it would require `/fp:fast`). Release C therefore stays a one-element-at-a-time loop, which is why our SIMD kernels can still beat it.
+
+**Configuration settings must match.** Visual Studio stores project settings separately for each configuration. Our assembly build step was at first set up only for Release, which made the Debug build fail to link (Section 10, problem 1).
 
 ## 4. Kernel Implementations
 
 <!-- Short description each. Persons 2 and 3 may write their own subsections. -->
 
 ### 4.1 C
-<!-- Loop structure, accumulator choice, why it is the "answer key". -->
-[FILL]
+
+File: `dot_product_c.c`
+
+```c
+void dot_product_c(int64_t n, const double* A, const double* B, double* Z)
+{
+    double sum = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        sum += A[i] * B[i];
+    }
+    *Z = sum;
+}
+```
+
+The kernel is a direct translation of the formula: one loop over i = 0 … n − 1, multiplying A[i] by B[i] and adding the product to a running sum.
+
+- **64-bit loop index.** `i` has the same type as `n` (`int64_t`), so the comparison `i < n` is always between two 64-bit values and the index stays correct at our largest sizes (2^28 elements and beyond).
+- **Local accumulator, one store.** The sum is kept in a local `double` and written through `Z` once, after the loop. Writing `*Z += A[i] * B[i]` on every iteration would force a memory store each time in a Debug build and inflate the C timing for no reason. This also mirrors what the assembly kernels do: keep the sum in a register and store it once at the end.
+- **No special cases.** The loop handles every n the same way: there is no tail handling, unrolling or lane reduction. For n = 0 the loop simply doesn't run and Z is 0.0, which is the correct answer.
+
+This simplicity is what makes it the answer key (Section 3.5): it adds the elements one at a time, in order, and has no extra code paths where a bug could hide. The C kernel is compiled by MSVC, so it is the only kernel whose speed depends on the build configuration (Section 3.6).
 
 ### 4.2 x86-64 (non-SIMD)
 <!--
@@ -253,17 +314,31 @@ PASS  if  |Z_kernel - Z_C| <= 1e-9 * sum(|A[i] * B[i]|)
 
 ## 5. Program Output and Execution Times (spec item i)
 
-<!-- One full-output screenshot per build. Can a reader see build type, n, kernel, Z, time, PASS/FAIL? -->
+The program's output has three parts:
+
+1. a header line naming the build (`DEBUG` or `RELEASE`) and the number of runs per kernel;
+2. the untimed boundary tests (Section 7);
+3. the timed benchmarks, showing Z, avg, min, max, SD and PASS/FAIL for every kernel at every size.
+
+It ends with a correctness report grouped by kernel (Section 6). The output is too long for one screen, so each build is shown in two images.
+
+These are example runs of the final program; the tables in Section 8 report the median of three runs, so the numbers here differ slightly from them.
 
 ### Debug
-![Debug output](images/debug_output.png)
+![Debug output: header and boundary tests](images/debug_output_1.png)
+
+![Debug output: benchmarks](images/debug_output_2.png)
 
 ### Release
-![Release output](images/release_output.png)
+![Release output: header and boundary tests](images/release_output_1.png)
+
+![Release output: benchmarks](images/release_output_2.png)
 
 ## 6. Correctness Checks (spec items iii-vi)
 
 <!-- Under each screenshot, one or two sentences: does Z match C exactly or within tolerance, and why? -->
+
+After the benchmarks, the program prints a correctness report grouped by kernel. For every benchmark size it shows the kernel's Z, the C reference Z, the difference between them, the allowed tolerance and the verdict. The screenshots below are the four blocks of that report from the Release run.
 
 ### 6.1 C
 ![C correctness](images/correct_c.png)
@@ -299,7 +374,9 @@ Elements handled by the packed main loop vs. the scalar tail:
 | 1003 | 1 | 1002 / 1 | 3 | 1000 / 3 | [FILL] |
 | 1004 | 0 | 1004 / 0 | 0 | 1004 / 0 | [FILL] |
 
-![XMM and YMM boundary check](images/boundary.png)
+The boundary tests run the same way in both builds; the screenshot below is from the Release run.
+
+![Boundary tests for all kernels](images/release_output_1.png)
 
 ## 8. Comparative Results (spec item ii)
 
@@ -373,6 +450,14 @@ These sizes fit in the CPU caches: 64 KiB (2^12) and 512 KiB (2^15) of data. Tim
 
 The same runs also re-measured 2^20, 2^26 and 2^28; those results agree with the medians in 8.1 and 8.2 (for example, Release YMM at 2^28: 124.81 ms vs a median of 124.97 ms).
 
+![Cache-size run, Debug](images/runs/cache_debug.png)
+
+*Cache-size run, Debug.*
+
+![Cache-size run, Release](images/runs/cache_release.png)
+
+*Cache-size run, Release.*
+
 ## 9. Analysis (spec item viii; worth 20 points)
 
 ### 9.1 Which kernel is fastest?
@@ -442,12 +527,65 @@ Write from what actually happened. Possible prompts:
 - What would you try next (e.g. multiple accumulators, FMA)?
 -->
 
-| Problem | Cause | Solution |
-| --- | --- | --- |
-| [FILL] | [FILL] | [FILL] |
-| [FILL] | [FILL] | [FILL] |
+| # | Problem | Cause | Solution |
+| --- | --- | --- | --- |
+| 1 | Debug build failed with `LNK2001: unresolved external symbol` for all three assembly kernels | The Custom Build Tool for the `.asm` files was configured only for the **Release** configuration. In Debug they had no build rule, so they were silently skipped; the build log showed only the two `.c` files being compiled | Set the `.asm` files' Custom Build Tool properties with **Configuration: All Configurations** (and Platform: x64), then rebuilt; the log then showed each `.asm` file being assembled |
+| 2 | Early timings couldn't be used | Development was partly on an Apple Silicon Mac, which can't run x86-64 AVX code natively, and early result tables didn't record the build type or machine | All final measurements on one x86-64 Windows laptop, with build type and hardware recorded |
+| 3 | 2^30 failed to allocate | A and B together need 16 GB, the laptop's entire RAM | Reduced the largest size, as the specification allows |
+| 4 | 2^30 later allocated but never finished, and 2^29 ran extremely slowly | `_aligned_malloc` reserves virtual memory, which Windows backed with the page file, so the program **thrashed** | Diagnosed with Task Manager (memory 97%, disk 95%, ~3.1 GB of 8 GB resident, CPU 5.8%); settled on 2^28 |
+| 5 | Results that contradicted the code (YMM slower than XMM at 2^26; XMM no faster than scalar at 2^28) | Run-to-run variation of up to about 25% on the laptop; the anomalies disappeared on rerun | Fixed test conditions, 3 runs per build reported as the median; added min/max/sd to the output |
+| 6 | Some averages inflated (e.g. Release 2^26 scalar ASM: 56 ms average vs ~43 ms typical) | A few of the 30 calls in a run were 2–4× slower than the rest | Detected through max and sd; flagged in the run log and footnoted in Section 8 instead of being reported as a real slowdown |
+| 7 | Debug speedups looked dramatic (YMM ~5× faster than C) | Debug C stores the running sum in memory on every iteration; that's compiler overhead, not a SIMD benefit | Compared against Release C, where scalar ASM ≈ C and YMM is only ~1.4× faster |
+| 8 | SIMD results never matched C exactly | SIMD adds in a different order (2 or 4 partial sums), and floating-point addition isn't associative | Compared with a tolerance scaled by sum of \|A[i]·B[i]\| instead of `==` |
+| 9 | Initial boundary tests didn't match the checklist (only 1003 of 1000–1004) | The first test list covered the remainders but not the requested sizes | Added 1–8, 1000–1004 and 2^20+1…+3; left out n = 0 because `_aligned_malloc(0)` may return NULL |
+| 10 | The specification's sizes couldn't show SIMD's theoretical speedup | All three are larger than the CPU caches, so every kernel was memory-bound | Added 2^12 and 2^15, which fit in cache: XMM reached exactly 2×, YMM ~3.2–3.4× |
+| 11 | Tiny sizes are hard to time precisely | 2^12 kernels take under a microsecond, and times are printed to 0.1 µs | Used min alongside avg, and treated 2^15 as the main in-cache result |
+| 12 | YMM kernel uses AVX instructions, not AVX2-specific ones | 256-bit packed-double multiply/add are part of AVX | [FILL: instructor's answer] |
 
-**AHA moments:** [FILL]
+[FILL: problems Persons 2 and 3 hit while writing the XMM/YMM kernels, e.g. tail handling, reduction, register saving]
+
+**Lesson from problem 1:** in Visual Studio, project and file properties are stored per configuration, and the Properties dialog edits only the configuration selected at the top. A setting that works in Release can be missing in Debug and fail without a clear error. Checking the build log for what was actually compiled is what revealed it.
+
+### 10.1 From free experimentation to a structured experiment
+
+**Getting the build to work.** Our first full build failed at the linking stage with `LNK2001: unresolved external symbol` for all three assembly kernels. The C files compiled, but the build log showed no assembly step at all. The Custom Build Tool for the `.asm` files had only been set up for the Release configuration, so in Debug they were never passed to NASM. After applying the settings to all configurations, all four kernels linked. We also learned that development on an Apple Silicon Mac couldn't produce valid results, since it can't run x86-64 AVX code natively, so all final measurements were done on an x86-64 Windows laptop.
+
+**First run (Debug).** All four kernels passed the correctness check, and the scalar assembly matched the C result exactly. 2^30 failed to allocate (2 × 8 GB). Two results didn't fit the rest:
+
+- at 2^26, YMM was slower than XMM (60.7 vs 49.4 ms);
+- at 2^28, XMM was no faster than scalar assembly (369.4 vs 369.5 ms).
+
+Nothing in the code explained either result.
+
+**The allocation that "succeeded".** After closing other programs and rerunning, the 2^30 allocation no longer failed, but the program never finished. We learned that `_aligned_malloc` reserves *virtual* memory, which Windows can back with the page file on the SSD. We then tried 2^29 (8 GB), which allocated but ran very slowly. Task Manager showed what was happening:
+
+- system memory at 97% and disk at 95%;
+- the program writing about 145 MB/s to disk, despite never opening a file;
+- only about 3.1 GB of its 8 GB actually in RAM;
+- only 5.8% CPU use.
+
+The program was **thrashing**: spending its time moving memory pages between RAM and the SSD instead of computing. Any timings from that run would have measured the SSD, not memory. So we set 2^28 (4 GB) as our largest size, the biggest that fits in physical RAM, which the specification allows.
+
+**The anomalies disappear.** A clean rerun at 2^20, 2^26 and 2^28 reversed both earlier anomalies: XMM and YMM were tied at 2^26 (49.9 vs 49.0 ms), and XMM clearly beat scalar assembly at 2^28. Comparing all the exploratory runs showed large run-to-run variation; C at 2^28, for example, measured 1504, 1207 and 1509 ms. We had been explaining results that were really measurement noise, which matters most at large n, where every kernel is limited by memory speed and small disturbances can change the ranking.
+
+**Patterns that held in every run.**
+
+- Every kernel passed, and scalar assembly always matched C exactly.
+- At 2^20, the order was always YMM > XMM > scalar ASM > C.
+- At 2^26 and 2^28, XMM and YMM levelled off at a similar bandwidth of about 20–24 GB/s.
+
+**Moving to a structured experiment.** Because single runs couldn't be trusted, we added min, max and standard deviation to the program's output and adopted a fixed procedure for the final measurements (Section 3.3): fixed conditions, 3 consecutive runs per build, and the median reported with its range. The final results in Section 8 come from this procedure.
+
+**Debug vs Release.** The controlled runs showed that the large Debug speedups were mostly compiler overhead. In Release, C became as fast as our scalar assembly, and YMM's advantage over C shrank from about 4.4–5.2× (Debug) to about 1.4× (Release).
+
+**Testing inside the cache.** Since all three specification sizes are larger than the CPU caches, we added two sizes that fit (2^12 and 2^15). There, XMM was exactly 2× faster than scalar code and YMM about 3.2–3.4×, close to their theoretical widths. This confirmed that the kernels work as designed and that memory, not the SIMD code, limits them at large sizes.
+
+### 10.2 AHA moments
+
+- **A successful allocation doesn't mean the data fits in RAM.** Virtual memory can hide the problem until the program slows to disk speed.
+- **Wider SIMD only pays off when the data is close to the CPU.** In cache, YMM was 3.2–3.4× faster than scalar code; out of cache, only about 1.4×, because every kernel waits on memory.
+- **The compiler's optimizer mattered more than SIMD at large sizes.** Going from Debug to Release made C about 4× faster; hand-written YMM added only about 1.4× on top of that.
+- **Measurement noise can look like a real result.** Two "anomalies" from our first runs disappeared on rerun; only repeated, controlled runs showed which differences were real.
 
 ## 11. How to Build and Run
 
@@ -463,4 +601,36 @@ Write from what actually happened. Possible prompts:
 2. Set the platform to **x64** and the configuration to **Debug** or **Release**.
 3. Build with **Build → Rebuild Solution**. The `.asm` files are assembled with `nasm -f win64`.
 4. Run with **Debug → Start Without Debugging** (Ctrl+F5).
-5. The console prints the boundary tests first, then the timed benchmarks with PASS/FAIL for each kernel.
+5. The console prints the boundary tests first, then the timed benchmarks with PASS/FAIL for each kernel, and finally a correctness report grouped by kernel.
+
+## Appendix: Controlled-run screenshots
+
+The benchmark sections of the six controlled runs used for the tables in Sections 8.1 and 8.2.
+
+### Debug
+
+![Debug run 1](images/runs/debug_run1.png)
+
+*Debug run 1.*
+
+![Debug run 2](images/runs/debug_run2.png)
+
+*Debug run 2.*
+
+![Debug run 3](images/runs/debug_run3.png)
+
+*Debug run 3.*
+
+### Release
+
+![Release run 1](images/runs/release_run1.png)
+
+*Release run 1.*
+
+![Release run 2](images/runs/release_run2.png)
+
+*Release run 2.*
+
+![Release run 3](images/runs/release_run3.png)
+
+*Release run 3.*
