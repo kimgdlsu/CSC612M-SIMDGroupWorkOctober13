@@ -1,6 +1,10 @@
 # CSC612M SIMD Vector Dot Product
 
-**Group members:** Jean, JM, Kim
+**Group members:** 
+1. Abarquez, Jean Khladyn Stefanie
+2. Gamboa, Kimberly Klaire
+3. Miranda, Juan Miguel
+
 **Course:** CSC612M - Advanced Computer Architecture
 
 <!--
@@ -337,12 +341,77 @@ The kernel is a line-by-line translation of the C loop:
 [FILL]
 
 ### 4.4 SIMD YMM
+
+File: `dot_product_ymm.asm`
 <!--
 - Main loop width, reduction of 4 lanes, tail handling, vzeroupper and why.
 - Note: vmulpd/vaddpd on YMM are AVX, not AVX2 instructions. What did the
   instructor say about this?
 -->
-[FILL]
+The YMM version is our 256-bit AVX2 SIMD kernel. While XMM processes 2 doubles at a time, YMM allows us to process **4 double-precision floats in parallel** per loop iteration.
+
+1. **Loop Division:** 
+   We divide $n$ by 4 using a bit shift (`shr rax, 2`) to get the number of full YMM loop passes, and use `and r10, 3` to get the leftover count ($n \pmod 4$).
+
+   ```nasm
+   mov rax, rcx
+   shr rax, 2    ; rax = n / 4 (YMM loop count)
+   mov r10, rcx
+   and r10, 3    ; r10 = n % 4 (tail count)
+   ```
+
+2. **Main YMM Loop:**
+   * Loads 4 doubles (32 bytes) from Array A and Array B using unaligned vector loads (`vmovupd`).
+   * Multiplies all 4 pairs at once using `vmulpd`.
+   * Accumulates the products into 4 running sum lanes inside `ymm0` using `vaddpd`.
+   * Moves array pointers forward by 32 bytes each step.
+
+   ```nasm
+   .ymm_loop:
+       vmovupd ymm1, [rdx]        ; Load 4 doubles from A
+       vmovupd ymm2, [r8]         ; Load 4 doubles from B
+       vmulpd  ymm1, ymm1, ymm2   ; Multiply element-wise
+       vaddpd  ymm0, ymm0, ymm1   ; Accumulate into ymm0
+       add     rdx, 32            ; Advance A pointer by 32 bytes
+       add     r8, 32             ; Advance B pointer by 32 bytes
+       dec     rax
+       jnz     .ymm_loop
+   ```
+
+3. **Horizontal Reduction:** 
+   Once the main loop finishes, `ymm0` holds 4 partial sums. We extract the top 2 doubles into `xmm1` using `vextractf128`, add them to the bottom 2 doubles, and run `vhaddpd` to combine all 4 values down into a single scalar double inside `xmm0`.
+
+   ```nasm
+   vextractf128 xmm1, ymm0, 1     ; Extract top 2 doubles to xmm1
+   vaddpd       xmm0, xmm0, xmm1  ; Add top 2 doubles to bottom 2
+   vhaddpd      xmm0, xmm0, xmm0  ; Combine into 1 scalar double
+   ```
+
+4. **Tail Handling:** 
+   If $n$ is not divisible by 4 (like $n = 1, 3, 5, 7, 1003$), a small scalar tail loop processes the remaining 1 to 3 elements one-by-one so we don't miss data or read out of bounds.
+
+   ```nasm
+   .tail_step:
+       vmovsd xmm1, [rdx]         ; Load 1 leftover double from A
+       vmulsd xmm1, xmm1, [r8]    ; Multiply by 1 double from B
+       vaddsd xmm0, xmm0, xmm1    ; Add to scalar total
+       add    rdx, 8              ; Advance A pointer by 8 bytes
+       add    r8, 8               ; Advance B pointer by 8 bytes
+       dec    r10
+       jnz    .tail_step
+   ```
+
+5. **Cleanup:** 
+   We store the scalar answer into `*Z` (`[r9]`) and execute `vzeroupper` before returning to prevent AVX-to-SSE transition delays.
+
+   ```nasm
+   vmovsd [r9], xmm0              ; Store double result into Z
+   vzeroupper                     ; Clear upper YMM bits
+   ret
+   ```
+
+#### Performance Summary:
+YMM was the fastest kernel overall, reaching a **~6.43x speedup** over scalar C at $n = 268,435,456$ elements. It didn't get a full 2x speedup over XMM because streaming hundreds of millions of elements from RAM hits hardware **memory bandwidth limits**.
 
 ## 5. Program Output and Execution Times (spec item i)
 
