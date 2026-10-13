@@ -16,7 +16,7 @@ $$Z = \sum_{i=0}^{n-1} A_i B_i$$
 
 It compares four implementations using a shared C driver. The C result is the reference for correctness checks.
 
- As specified by the project specifications, A and B are double-precision vectors, n is an integer and Z is a double. C, x86-64 assembly(non-SIMD), SIMD XMM and SIMD YMM are the 4 versions of the same computation, with the goal of finding out the specific performance levels of each variant and how do they stack up against one another. 
+As specified by the project specifications, A and B are double-precision vectors, n is an integer and Z is a double. C, x86-64 assembly(non-SIMD), SIMD XMM and SIMD YMM are the 4 versions of the same computation, with the goal of finding out the specific performance levels of each variant and how do they stack up against one another. 
 
 | Kernel | File | Elements per instruction | Author |
 | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ It compares four implementations using a shared C driver. The C result is the re
 | CPU | intel Core Ultra 5 226V |
 | Cores / threads | 8 |
 | L1d / L2 / L3 cache | 832KB/14MB/8MB |
-| RAM | LPDDR5 16GB 8500M/T |
+| RAM | 16 GB LPDDR5X-8533 |
 | OS | Windows 11 |
 | Visual Studio version / toolset | 2026 |
 | NASM version | 3.02rc13 |
@@ -41,7 +41,7 @@ It compares four implementations using a shared C driver. The C result is the re
 
 ### 3.1 Shared interface (`kernels.h`)
 
-The common signature that every kernel variant uses has the parameters: int64_t n, const double* A, const double* B, double* Z. The shared interface will allow for a standard and streamlined way for the kernels to access the memory and minimizing any possible side effects in timing performance.  
+The common signature that every kernel variant uses has the parameters: int64_t n, const double* A, const double* B, double* Z. The shared interface lets one driver call all four kernels the same way, through a single function-pointer type, and it let the three of us write our kernels in parallel without coordinating on registers or argument order.  
 
 These correspond to the registers relevant to the Windows x86-64 calling convention.
 
@@ -65,13 +65,13 @@ A[i] = sin(i * 0.001)
 B[i] = cos(i * 0.002)
 ```
 
-The will ensure each kernel's performance will be fairly comparable since the sizes and contents of the vectors should be the same. 
+This will ensure each kernel's performance will be fairly comparable since the sizes and contents of the vectors should be the same. 
 
 ### 3.3 Timing method (spec items 2 and 4)
 
 The group opted for QueryPerformanceFrequency and QueryPerformanceCounter as the performance timers for the program. These are included from windows.h and thus are windows native methods to measuring performance metrics. 
 
-`QueryPerformanceCounter` reads a high-resolution hardware counter, and `QueryPerformanceFrequency` gives the number of counter ticks per second. Elapsed time in milliseconds is therefore `(t1 - t0) × 1000 / frequency`. Its resolution is well below a microsecond, which matters because our smallest benchmark (2^20 with the YMM kernel) takes only about half a millisecond. The standard C `clock()` function is far too coarse for that.
+`QueryPerformanceCounter` reads a high-resolution hardware counter, and `QueryPerformanceFrequency` gives the number of counter ticks per second. Elapsed time in milliseconds is therefore `(t1 - t0) × 1000 / frequency`. Its resolution is well below a microsecond, which matters because our smallest benchmark (2^12 with the YMM kernel) takes well under a microsecond, and even the specification's smallest size (2^20) takes only about half a millisecond. The standard C `clock()` function is far too coarse for that.
 
 #### What is timed
 
@@ -481,19 +481,23 @@ After the benchmarks, the program prints a correctness report grouped by kernel.
 
 ### 6.1 C
 ![C correctness](images/correct_c.png)
-All entries result in success.
+
+The reference values: every other kernel is compared against these Z values at each size.
 
 ### 6.2 x86-64
 ![x86-64 correctness](images/correct_asm.png)
-All entries result in success.
+
+The difference from C is exactly 0 at every size: the scalar kernel performs the same operations in the same order as the C loop, so it produces identical bits.
 
 ### 6.3 SIMD XMM
 ![XMM correctness](images/correct_xmm.png)
-All entries result in success.
+
+All sizes PASS. The differences from C are on the order of 10^-12 to 10^-10, far below the tolerance; they come from adding the products in a different order (two partial sums), not from an error (Section 3.5).
 
 ### 6.4 SIMD YMM
 ![YMM correctness](images/correct_ymm.png)
-All entries result in success.
+
+All sizes PASS. The differences from C are at most about 2 × 10^-10 (and exactly 0 at 2^12), far below the tolerance; as with XMM, they come from the different order of addition (four partial sums).
 
 ## 7. Boundary Checks (spec items 3a and vii)
 
