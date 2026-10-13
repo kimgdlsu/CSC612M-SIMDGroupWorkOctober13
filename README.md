@@ -7,22 +7,7 @@
 
 **Course:** CSC612M - Advanced Computer Architecture
 
-<!--
-HOW TO USE THIS TEMPLATE
-- [FILL: ...]  = something you must write or measure.
-- HTML comments like this one are guiding questions. They don't show on GitHub,
-  but delete them before submitting anyway.
-- Screenshots go in an images/ folder in the repo and are embedded with
-  ![caption](images/file.png) so they appear INLINE (spec: no external links).
--->
-
 ## 1. Project Overview
-
-<!--
-- What does the program compute, in one sentence?
-- Write the formula: Z = sum of A[i] * B[i], i = 0 .. n-1
-- Why compare four versions of the same computation? What question is the project answering?
--->
 
 This project is designed to showcase the performance of different SIMD and non SIMD compute kernels that all compute for the vector dot product Z = Σ A[i]·B[i] for i = 0 … n−1.
 The dot product formula can also be illustrated as:
@@ -33,7 +18,6 @@ It compares four implementations using a shared C driver. The C result is the re
 
  As specified by the project specifications, A and B are double-precision vectors, n is an integer and Z is a double. C, x86-64 assembly(non-SIMD), SIMD XMM and SIMD YMM are the 4 versions of the same computation, with the goal of finding out the specific performance levels of each variant and how do they stack up against one another. 
 
-
 | Kernel | File | Elements per instruction | Author |
 | --- | --- | --- | --- |
 | C | `dot_product_c.c` | 1 | Kim |
@@ -42,13 +26,6 @@ It compares four implementations using a shared C driver. The C result is the re
 | SIMD YMM | `dot_product_ymm.asm` | 4 (256-bit / 64-bit double) | Jean |
 
 ## 2. Test Environment
-
-<!--
-Without this, nobody can interpret your timings. Find the cache sizes from
-Task Manager > Performance > CPU, or the CPU's spec page.
-Were ALL timings measured on this machine? If any came from a GitHub Actions
-runner, say so here.
--->
 
 | Item | Value |
 | --- | --- |
@@ -63,14 +40,6 @@ runner, say so here.
 ## 3. Program Design and Methodology
 
 ### 3.1 Shared interface (`kernels.h`)
-
-<!--
-- What is the common signature every kernel uses?
-- Under the Windows x64 calling convention, which register holds n, A, B, Z?
-- Why does Z come back through a pointer instead of a return value? (Or: why
-  is either choice fine, and why did you pick this one?)
-- Why freeze the interface before anyone writes a kernel?
--->
 
 The common signature that every kernel variant uses has the parameters: int64_t n, const double* A, const double* B, double* Z. The shared interface will allow for a standard and streamlined way for the kernels to access the memory and minimizing any possible side effects in timing performance.  
 
@@ -89,11 +58,6 @@ void kernel(int64_t n, const double* A, const double* B, double* Z);
 
 ### 3.2 Input initialization (spec item 5)
 
-<!--
-- State the exact formula used for A[i] and B[i].
-- Why a fixed formula instead of random numbers?
--->
-
 The exact formula for initializing vectors A and B are:
 
 ```text
@@ -104,13 +68,6 @@ B[i] = cos(i * 0.002)
 The will ensure each kernel's performance will be fairly comparable since the sizes and contents of the vectors should be the same. 
 
 ### 3.3 Timing method (spec items 2 and 4)
-
-<!--
-- Which timer did you use and why?
-- What is INSIDE the timed region? What is deliberately OUTSIDE it?
-- Why is there one untimed warm-up call? What happens to the average without it?
-- How many timed runs, and how is the reported number computed?
--->
 
 The group opted for QueryPerformanceFrequency and QueryPerformanceCounter as the performance timers for the program. These are included from windows.h and thus are windows native methods to measuring performance metrics. 
 
@@ -200,13 +157,6 @@ The test laptop has 16 GB of RAM, part of which is always in use by Windows and 
 
 ### 3.5 Correctness method (spec item 6)
 
-<!--
-- Why is the C version the reference?
-- Why can't you compare with == ?
-- What is the tolerance formula, and why scale it by sum|A[i]*B[i]| instead of |Z|?
-- Which kernel should match C EXACTLY, and why?
--->
-
 The C kernel is the answer key; the three assembly kernels are checked against it at every size, both in the untimed boundary tests and in the benchmarks.
 
 #### Why C is the reference
@@ -259,8 +209,6 @@ The program prints which build it is running (`build: DEBUG` or `build: RELEASE`
 **Configuration settings must match.** Visual Studio stores project settings separately for each configuration. Our assembly build step was at first set up only for Release, which made the Debug build fail to link (Section 10, problem 1).
 
 ## 4. Kernel Implementations
-
-<!-- Short description each. Persons 2 and 3 may write their own subsections. -->
 
 ### 4.1 C
 
@@ -335,30 +283,115 @@ The kernel is a line-by-line translation of the C loop:
 
 **Exact match with C.** The kernel performs the same multiply and add, one element at a time, in the same order as the C loop, with the same 64-bit double rounding. It therefore produces exactly the same Z as C at every size (difference 0 in the correctness report). Its speed is identical to Release C as well (0.99–1.00× at 2^20 and 2^28; Section 8.2), because with optimization enabled MSVC compiles the C loop into essentially this same scalar loop. In Debug, it is about 3.6–4.9× faster than C, entirely because of the Debug build's extra memory traffic (Section 3.6).
 
-
 ### 4.3 SIMD XMM
-<!-- Main loop width, horizontal reduction, tail handling. -->
-[FILL]
+
+File: `dot_product_xmm.asm`
+
+The XMM version is our 128-bit SIMD kernel. A 128-bit XMM register holds **2 double-precision floats**, so each loop iteration multiplies and accumulates two pairs of elements at once. It uses the VEX-encoded (`v`-prefixed) instructions, the same family as the YMM kernel, but on 128-bit registers.
+
+1. **Empty input and loop division:**
+   If n ≤ 0, the kernel jumps straight to the end and stores 0.0. Otherwise it divides n by 2 with a bit shift (`shr rax, 1`) to get the number of full pairs. If there are no pairs (n = 1), it skips the main loop and goes straight to the tail.
+
+   ```nasm
+   vxorpd  xmm0, xmm0, xmm0   ; both accumulator lanes = 0.0
+   test    rcx, rcx
+   jle     .save              ; n <= 0: store 0.0
+   mov     rax, rcx
+   shr     rax, 1             ; rax = n / 2 (number of pairs)
+   jz      .odd               ; n = 1: no pairs, go to the tail
+   ```
+
+2. **Main XMM loop:**
+   * Loads 2 doubles (16 bytes) from Array A and Array B using unaligned vector loads (`vmovupd`).
+   * Multiplies both pairs at once using `vmulpd`.
+   * Accumulates the two products into 2 running-sum lanes inside `xmm0` using `vaddpd`. The low lane collects the even-indexed products (A[0]·B[0], A[2]·B[2], …) and the high lane the odd-indexed ones.
+   * Moves the array pointers forward by 16 bytes each step.
+
+   ```nasm
+   .pairs:
+       vmovupd xmm1, [rdx]        ; Load A[i], A[i+1]
+       vmovupd xmm2, [r8]         ; Load B[i], B[i+1]
+       vmulpd  xmm1, xmm1, xmm2   ; Multiply element-wise
+       vaddpd  xmm0, xmm0, xmm1   ; Accumulate into xmm0
+       add     rdx, 16            ; Advance A pointer by 16 bytes
+       add     r8, 16             ; Advance B pointer by 16 bytes
+       dec     rax
+       jnz     .pairs
+   ```
+
+3. **Tail handling:**
+   Since XMM processes elements in pairs, at most **one** element can be left over: exactly when n is odd. The kernel tests the lowest bit of n (`test rcx, 1`); if it is set, it multiplies A[n−1] by B[n−1] with scalar instructions and adds the product into the low lane of `xmm0`. The scalar load reads exactly one double, so nothing past the end of either array is touched.
+
+   ```nasm
+   .odd:
+       test   rcx, 1              ; n even?  -> no leftover element
+       jz     .combine
+       vmovsd xmm1, [rdx]         ; Load A[n-1]
+       vmulsd xmm1, xmm1, [r8]    ; Multiply by B[n-1]
+       vaddsd xmm0, xmm0, xmm1    ; Add into the low lane
+   ```
+
+   The VEX form `vaddsd xmm0, xmm0, xmm1` only changes the low lane and copies the high lane from its first source (`xmm0`), so the odd-index partial sum in the high lane is kept.
+
+4. **Horizontal reduction:**
+   `xmm0` now holds 2 partial sums. `vunpckhpd` copies the high lane into the low position of `xmm1`, and a scalar `vaddsd` adds the two lanes together into a single double in the low lane of `xmm0`.
+
+   ```nasm
+   .combine:
+       vunpckhpd xmm1, xmm0, xmm0  ; xmm1 low lane = xmm0 high lane
+       vaddsd    xmm0, xmm0, xmm1  ; low + high -> one scalar double
+   ```
+
+5. **Cleanup:**
+   The kernel stores the result into `*Z` (`[r9]`) and executes `vzeroupper` before returning, the same as the YMM kernel, so that the caller does not pay an AVX-to-SSE transition penalty.
+
+   ```nasm
+   .save:
+       vmovsd     [r9], xmm0      ; Store double result into Z
+       vzeroupper                 ; Clear upper YMM bits
+       ret
+   ```
+
+#### Differences from the YMM kernel
+
+| | XMM (`dot_product_xmm.asm`) | YMM (`dot_product_ymm.asm`) |
+| --- | --- | --- |
+| Register width | 128 bits = 2 doubles | 256 bits = 4 doubles |
+| Main-loop count | n / 2 (`shr rax, 1`) | n / 4 (`shr rax, 2`) |
+| Pointer step | 16 bytes | 32 bytes |
+| Leftover elements | 0 or 1 (`test rcx, 1`) | 0 to 3 (`and r10, 3`) |
+| Tail | a single scalar step, no loop | a scalar loop |
+| Order of tail and reduction | tail is added into the low lane first, then the 2 lanes are combined | the 4 lanes are combined first, then the tail is added |
+| Reduction | `vunpckhpd` + `vaddsd` | `vextractf128` + `vaddpd` + `vhaddpd` |
+
+The XMM kernel uses only volatile registers (RAX, RCX, RDX, R8, R9 and XMM0–XMM2), so it needs no prologue or epilogue to save and restore registers.
+
+#### Performance summary
+
+When the data fits in cache, XMM reaches its full theoretical speedup: exactly **2.00×** faster than scalar code at 2^15 in Release (Section 8.3). At the specification's sizes (2^20 to 2^28), its advantage over optimized C drops to about **1.25–1.35×** (Section 8.2), because the kernel spends most of its time waiting for data from memory rather than computing (Section 9.3).
 
 ### 4.4 SIMD YMM
 
 File: `dot_product_ymm.asm`
-<!--
-- Main loop width, reduction of 4 lanes, tail handling, vzeroupper and why.
-- Note: vmulpd/vaddpd on YMM are AVX, not AVX2 instructions. What did the
-  instructor say about this?
--->
-The YMM version is our 256-bit AVX2 SIMD kernel. While XMM processes 2 doubles at a time, YMM allows us to process **4 double-precision floats in parallel** per loop iteration.
 
-1. **Loop Division:** 
-   We divide $n$ by 4 using a bit shift (`shr rax, 2`) to get the number of full YMM loop passes, and use `and r10, 3` to get the leftover count ($n \pmod 4$).
+The YMM version is our 256-bit YMM SIMD kernel. While XMM processes 2 doubles at a time, YMM allows us to process **4 double-precision floats in parallel** per loop iteration.
+
+1. **Empty input and loop division:** 
+   If $n \le 0$, the kernel jumps straight to the end and stores 0.0. Otherwise we divide $n$ by 4 using a bit shift (`shr rax, 2`) to get the number of full YMM loop passes, and use `and r10, 3` to get the leftover count ($n \bmod 4$). If there are no full groups of 4 ($n$ = 1 to 3), the main loop and the reduction are skipped and the kernel goes straight to the tail. Without this check, `dec rax` would wrap from 0 to $2^{64} - 1$ and the loop would run far past the end of the arrays.
 
    ```nasm
-   mov rax, rcx
-   shr rax, 2    ; rax = n / 4 (YMM loop count)
-   mov r10, rcx
-   and r10, 3    ; r10 = n % 4 (tail count)
+   vxorpd ymm0, ymm0, ymm0   ; all 4 accumulator lanes = 0.0
+   test   rcx, rcx
+   jle    .store_result      ; n <= 0: store 0.0
+   mov    rax, rcx
+   shr    rax, 2             ; rax = n / 4 (YMM loop count)
+   mov    r10, rcx
+   and    r10, 3             ; r10 = n % 4 (tail count)
+   test   rax, rax
+   jz     .tail_loop         ; n < 4: no full groups, go to the tail
    ```
+
+   Skipping the reduction for $n$ < 4 is safe: the accumulator is still all zeros, so the low lane of `xmm0` already holds the correct starting sum of 0.0.
 
 2. **Main YMM Loop:**
    * Loads 4 doubles (32 bytes) from Array A and Array B using unaligned vector loads (`vmovupd`).
@@ -388,9 +421,12 @@ The YMM version is our 256-bit AVX2 SIMD kernel. While XMM processes 2 doubles a
    ```
 
 4. **Tail Handling:** 
-   If $n$ is not divisible by 4 (like $n = 1, 3, 5, 7, 1003$), a small scalar tail loop processes the remaining 1 to 3 elements one-by-one so we don't miss data or read out of bounds.
+   If $n$ is not divisible by 4 (for example $n$ = 2, 3, 1001, 1002, 1003), a small scalar tail loop processes the remaining 1 to 3 elements one-by-one so we don't miss data or read out of bounds. If $n \bmod 4$ is 0, the tail is skipped entirely; otherwise `dec r10` would wrap from 0 the same way as in step 1.
 
    ```nasm
+   .tail_loop:
+       test   r10, r10            ; n % 4 == 0?  -> no leftovers
+       jz     .store_result
    .tail_step:
        vmovsd xmm1, [rdx]         ; Load 1 leftover double from A
        vmulsd xmm1, xmm1, [r8]    ; Multiply by 1 double from B
@@ -405,13 +441,17 @@ The YMM version is our 256-bit AVX2 SIMD kernel. While XMM processes 2 doubles a
    We store the scalar answer into `*Z` (`[r9]`) and execute `vzeroupper` before returning to prevent AVX-to-SSE transition delays.
 
    ```nasm
-   vmovsd [r9], xmm0              ; Store double result into Z
-   vzeroupper                     ; Clear upper YMM bits
-   ret
+   .store_result:
+       vmovsd [r9], xmm0          ; Store double result into Z
+       vzeroupper                 ; Clear upper YMM bits
+       ret
    ```
 
-#### Performance Summary:
-YMM was the fastest kernel overall, reaching a **~6.43x speedup** over scalar C at $n = 268,435,456$ elements. It didn't get a full 2x speedup over XMM because streaming hundreds of millions of elements from RAM hits hardware **memory bandwidth limits**.
+The kernel uses only volatile registers (RAX, RCX, RDX, R8, R9, R10 and YMM0–YMM2), so it needs no prologue or epilogue to save and restore registers.
+
+#### Performance summary
+
+YMM is the fastest kernel in Release at every size. When the data fits in cache, it is **3.17× faster than scalar code** at 2^15 (Section 8.3), close to its theoretical 4×. At the specification's sizes (2^20 to 2^28), its advantage over optimized C drops to about **1.42–1.44×**, and over XMM to only about 1.14× at 2^28 (Section 8.2). Streaming hundreds of millions of elements from RAM hits the **memory bandwidth limit**, so the extra SIMD width mostly goes unused (Section 9.3).
 
 ## 5. Program Output and Execution Times (spec item i)
 
@@ -437,8 +477,6 @@ These are example runs of the final program; the tables in Section 8 report the 
 
 ## 6. Correctness Checks (spec items iii-vi)
 
-<!-- Under each screenshot, one or two sentences: does Z match C exactly or within tolerance, and why? -->
-
 After the benchmarks, the program prints a correctness report grouped by kernel. For every benchmark size it shows the kernel's Z, the C reference Z, the difference between them, the allowed tolerance and the verdict. The screenshots below are the four blocks of that report from the Release run.
 
 ### 6.1 C
@@ -463,11 +501,13 @@ All entries result in success.
 
 XMM processes 2 doubles per iteration and YMM processes 4. When n is not a multiple of the SIMD width, some elements are left over at the end. A kernel that ignores them gives a wrong answer, and a kernel that loads a full 2- or 4-wide vector past the end of the array reads memory that doesn't belong to A or B.
 
-Both SIMD kernels handle this in three steps:
+Both SIMD kernels handle this with the same three parts:
 
-1. **Main loop:** runs n ÷ width times (rounded down), processing full vectors only.
-2. **Reduction:** adds the vector's lanes together into a single sum.
-3. **Scalar tail:** adds the remaining n mod width elements one at a time, using scalar instructions that read exactly one double each.
+1. **Main loop:** runs n ÷ width times (rounded down), processing full vectors only. It is skipped entirely when there are no full vectors.
+2. **Scalar tail:** adds the remaining n mod width elements one at a time, using scalar instructions that read exactly one double each. It is skipped when there are no leftovers.
+3. **Reduction:** adds the vector's lanes together into a single sum.
+
+The two kernels order the last two parts differently: YMM reduces its 4 lanes first and then adds its tail loop (0 to 3 elements) to the scalar sum, while XMM adds its single leftover element into the low lane first and then combines its 2 lanes (Sections 4.3 and 4.4). Both orders give the correct result.
 
 So no load ever goes past the end of the array, and every element is added exactly once.
 
@@ -499,7 +539,6 @@ Elements handled by the packed main loop vs. the scalar tail:
 | 2^20 + 1 | 1 | 1,048,576 / 1 | 1 | 1,048,576 / 1 |
 | 2^20 + 2 | 0 | 1,048,578 / 0 | 2 | 1,048,576 / 2 |
 | 2^20 + 3 | 1 | 1,048,578 / 1 | 3 | 1,048,576 / 3 |
-
 
 #### What a missing tail would look like
 
@@ -593,7 +632,7 @@ The same runs also re-measured 2^20, 2^26 and 2^28; those results agree with the
 
 *Cache-size run, Release.*
 
-## 9. Analysis (spec item viii; worth 20 points)
+## 9. Analysis (spec item viii)
 
 ### 9.1 Which kernel is fastest?
 
@@ -652,16 +691,6 @@ The machine's theoretical memory bandwidth is about 136 GB/s (8,533 MT/s × 16 b
 
 ## 10. Problems Encountered, Solutions, and AHA Moments (spec item ix)
 
-<!--
-Write from what actually happened. Possible prompts:
-- The LNK2001 unresolved-external errors: cause, how you found it, fix.
-- NASM setup (build customization vs custom build tool, PATH).
-- Did 2^30 fail to allocate? What did you decide?
-- Any correctness FAIL during development? What was the bug?
-- What surprised you in the timings?
-- What would you try next (e.g. multiple accumulators, FMA)?
--->
-
 | # | Problem | Cause | Solution |
 | --- | --- | --- | --- |
 | 1 | Debug build failed with `LNK2001: unresolved external symbol` for all three assembly kernels | The Custom Build Tool for the `.asm` files was configured only for the **Release** configuration. In Debug they had no build rule, so they were silently skipped; the build log showed only the two `.c` files being compiled | Set the `.asm` files' Custom Build Tool properties with **Configuration: All Configurations** (and Platform: x64), then rebuilt; the log then showed each `.asm` file being assembled |
@@ -675,9 +704,6 @@ Write from what actually happened. Possible prompts:
 | 9 | Initial boundary tests didn't match the checklist (only 1003 of 1000–1004) | The first test list covered the remainders but not the requested sizes | Added 1–8, 1000–1004 and 2^20+1…+3; left out n = 0 because `_aligned_malloc(0)` may return NULL |
 | 10 | The specification's sizes couldn't show SIMD's theoretical speedup | All three are larger than the CPU caches, so every kernel was memory-bound | Added 2^12 and 2^15, which fit in cache: XMM reached exactly 2×, YMM ~3.2–3.4× |
 | 11 | Tiny sizes are hard to time precisely | 2^12 kernels take under a microsecond, and times are printed to 0.1 µs | Used min alongside avg, and treated 2^15 as the main in-cache result |
-| 12 | YMM kernel uses AVX instructions, not AVX2-specific ones | 256-bit packed-double multiply/add are part of AVX | [FILL: instructor's answer] |
-
-[FILL: problems Persons 2 and 3 hit while writing the XMM/YMM kernels, e.g. tail handling, reduction, register saving]
 
 **Lesson from problem 1:** in Visual Studio, project and file properties are stored per configuration, and the Properties dialog edits only the configuration selected at the top. A setting that works in Release can be missing in Debug and fail without a clear error. Checking the build log for what was actually compiled is what revealed it.
 
