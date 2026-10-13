@@ -1,8 +1,8 @@
 # CSC612M SIMD Vector Dot Product
 
 **Group members:** 
-1. Abarquez, Jean Khladyn Stefanie
-2. Gamboa, Kimberly Klaire
+1. Abarquez, Jean 
+2. Gamboa, Kim
 3. Miranda, Juan Miguel
 
 **Course:** CSC612M - Advanced Computer Architecture
